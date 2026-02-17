@@ -1,25 +1,35 @@
-############################################################
+# =============================================================================
 # Root Variables
-############################################################
+# =============================================================================
+# This file defines the input variables for the Terraform configuration.
+# Variables can be overridden via a `terraform.tfvars` file or `-var` CLI arguments.
+
+# -----------------------------------------------------------------------------
+# Region and Project Settings
+# -----------------------------------------------------------------------------
 
 variable "location" {
   type        = string
   default     = "uksouth"
-  description = "Azure region to deploy resources in."
+  description = "Azure region to deploy resources in. (e.g. uksouth, eastus)"
 }
 
 variable "project_name" {
   type        = string
   default     = "connolly-transitory-demo-tf-3po"
-  description = "Name of the project/resource group."
+  description = "Name of the project/resource group. Used for naming resources and tagging."
 }
+
+# -----------------------------------------------------------------------------
+# Authentication and Access
+# -----------------------------------------------------------------------------
 
 variable "admin_username" {
   type        = string
   default     = "peter"
-  description = "Admin username for SSH access to all VMs."
+  description = "Admin username for SSH access to all VMs. Do not use 'admin' or 'root' as they are reserved/blocked by Azure."
 }
-
+# Note: For production, consider using Azure Key Vault to manage SSH keys securely.
 variable "admin_ssh_public_key" {
   type        = string
   description = "SSH public key used for admin access to all VMs."
@@ -28,9 +38,13 @@ variable "admin_ssh_public_key" {
 
 variable "gigamon_email" {
   type        = string
-  description = "Email address used as the owner tag on resources."
+  description = "Email address used as the owner tag on resources. Useful for resource tracking."
   default     = "pete.connolly@gigamon.com"
 }
+
+# -----------------------------------------------------------------------------
+# General VM Configuration
+# -----------------------------------------------------------------------------
 
 variable "ubuntu_version" {
   type        = string
@@ -38,11 +52,14 @@ variable "ubuntu_version" {
   default     = "22.04"
 }
 
-# ── VM sizes ────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# VM Sizes (Compute Resources)
+# -----------------------------------------------------------------------------
+# Adjust these values to scale vertical compute resources.
 
 variable "fm_vm_size" {
   type    = string
-  default = "Standard_D4s_v5"
+  default = "Standard_D4s_v5" # Recommended minimum for GigaVUE-FM
 }
 
 variable "uctv_vm_size" {
@@ -52,16 +69,21 @@ variable "uctv_vm_size" {
 
 variable "vseries_vm_size" {
   type    = string
-  default = "Standard_D4s_v5"
+  default = "Standard_D4s_v5" # Adjust based on throughput requirements
 }
 
 variable "ubuntu_vm_size" {
   type    = string
-  default = "Standard_B2s"
+  default = "Standard_B2s" # Burstable series suitable for low-traffic tests
 }
 
-# ── Gigamon image references (Azure Marketplace - 6.12) ────
+# -----------------------------------------------------------------------------
+# Gigamon Image References (Azure Marketplace - 6.12)
+# -----------------------------------------------------------------------------
+# These variables define the specific version of Gigamon software to deploy.
+# Ensure the subscription has accepted terms for these specific image URNs.
 
+# GigaVUE-FM
 variable "fm_image_publisher" {
   type    = string
   default = "gigamon-inc"
@@ -82,6 +104,7 @@ variable "fm_image_version" {
   default = "6.12.1099"
 }
 
+# UCT-V Controller
 variable "uctv_image_publisher" {
   type    = string
   default = "gigamon-inc"
@@ -102,6 +125,7 @@ variable "uctv_image_version" {
   default = "6.12.00"
 }
 
+# vSeries Node
 variable "vseries_image_publisher" {
   type    = string
   default = "gigamon-inc"
