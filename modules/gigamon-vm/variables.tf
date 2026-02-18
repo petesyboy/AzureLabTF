@@ -91,3 +91,8 @@ variable "project_tag" {
   type        = string
   description = "Value for the Project tag."
 }
+variable "custom_data" {
+  type        = string
+  default     = ""
+  description = "Base64-encoded cloud-init or custom data script to execute on first boot."
+}

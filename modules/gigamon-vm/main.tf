@@ -57,6 +57,7 @@ resource "azurerm_virtual_machine" "vm" {
   os_profile {
     computer_name  = var.vm_name
     admin_username = var.admin_username
+    custom_data    = var.custom_data != "" ? var.custom_data : null
   }
 
   os_profile_linux_config {
