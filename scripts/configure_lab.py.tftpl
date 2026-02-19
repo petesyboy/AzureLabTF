@@ -14,23 +14,23 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==============================================================================
 # CONFIGURATION (Populated by Terraform)
 # ==============================================================================
-FM_IP = "51.132.235.170"
+FM_IP = "${fm_ip}"
 FM_URL = f"https://{FM_IP}"
-UCTV_IP = "10.0.1.4"
-UCTV_PUBLIC_IP = "51.140.136.98"
-VSERIES_PUBLIC_IP = "51.11.128.151"
-TOOL_PUBLIC_IP = "20.90.154.71"
-PROD_IPS = "40.120.42.249,40.120.37.64".split(",")
-KEY_PATH = "C:/Users/msn/OneDrive - Gigamon Inc/Documents/Terraform/azure-lab-6.12/lab_key.pem"
-USERNAME = "peter"
+UCTV_IP = "${uctv_ip}"
+UCTV_PUBLIC_IP = "${uctv_public_ip}"
+VSERIES_PUBLIC_IP = "${vseries_public_ip}"
+TOOL_PUBLIC_IP = "${tool_public_ip}"
+PROD_IPS = "${prod_ips}".split(",")
+KEY_PATH = "${key_path}"
+USERNAME = "${username}"
 
 # FM Configuration Defaults
-FM_GROUP = "Azure-3PO-MD"
-FM_SUBGROUP = "Azure-3PO-Connection"
+FM_GROUP = "${fm_group}"
+FM_SUBGROUP = "${fm_subgroup}"
 
 # Azure Context (for Monitoring Domain)
-SUBSCRIPTION_ID = "f1739091-1166-41a4-b3cd-fb2521521588"
-TENANT_ID = "0927b619-f6e4-4461-bcda-333194268117"
+SUBSCRIPTION_ID = "${subscription_id}"
+TENANT_ID = "${tenant_id}"
 
 def run_ssh_command(ip, command, use_sudo=False):
     """Runs a command on a remote VM via SSH."""

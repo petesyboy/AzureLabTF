@@ -56,18 +56,43 @@ terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
-### 2. Monitor Configuration
-The `terraform apply` process will pause at the `null_resource.configure_lab` step while the Python script runs. This can take 5-10 minutes as it waits for the GigaVUE-FM VM to fully boot and initialize its web server.
+### 2. Post-Deployment Configuration (CRITICAL)
+
+The deployment creates the infrastructure, but GigaVUE-FM requires manual initialization and token generation.
+
+1.  **Access GigaVUE-FM**:
+    *   Once `terraform apply` finishes, get the FM IP: `terraform output fm_public_ip`
+    *   Open `https://<fm_public_ip>` in your browser.
+    *   Login with default credentials: `admin` / `admin123A!!`
+    *   **Uncheck** "SSH Key-Based Authentication" if prompted.
+    *   **Change the Password** when prompted.
+
+2.  **Generate API Token**:
+    *   In FM, go to **User Profile** (top right icon) > **API Token**.
+    *   Click **Generate**.
+    *   **Copy** the token to your clipboard.
+
+3.  **Run Automation Script**:
+    From your terminal in the project root:
+    ```powershell
+    # Activate Python Virtual Environment
+    .\scripts\.venv\Scripts\activate
+
+    # Run the script
+    python scripts/configure_lab.py
+    ```
+    *   **Paste** the API token when prompted.
+    *   The script will configure all agents and create the Monitoring Domain/Session automatically.
 
 ### 3. Retrieve Connection Details
-Once completed, Terraform will output the necessary IPs and credentials:
+Once configured, you can access the environment using the generated key `lab_key.pem`:
 
 ```bash
 terraform output
 ```
 
 Key outputs:
-*   `fm_public_ip`: URL for GigaVUE-FM (https://<IP>)
+*   `fm_public_ip`: URL for GigaVUE-FM
 *   `tool_vm_public_ip`: Access for ntopng
 *   `prod1_public_ip` / `prod2_public_ip`: SSH access for traffic generation
 

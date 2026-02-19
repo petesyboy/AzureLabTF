@@ -138,6 +138,17 @@
 # -----------------------------------------------------------------------------
 # This block configures the Terraform settings, including the required providers
 # and the backend for state storage (local in this case).
+resource "null_resource" "deployment_start" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command     = "[int](Get-Date -UFormat %s) | Out-File .start_time -Encoding ascii"
+    interpreter = ["PowerShell", "-Command"]
+  }
+}
+
 terraform {
   required_version = ">= 1.5.0"
 
@@ -358,13 +369,11 @@ locals {
         permissions: '0644'
         owner: root:root
         content: |
-          # Gigamon Cloud Configuration
-          # Initial placeholder - Updated by configure_lab.py
           Registration:
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
-            token: PRICEHOLDER_TOKEN
-            remoteIP: ${module.fm.public_ip}
+            token: PLACEHOLDER_TOKEN
+            remoteAddress: ${module.fm.public_ip}
             remotePort: 443
 
     runcmd:
@@ -379,13 +388,11 @@ locals {
         permissions: '0644'
         owner: root:root
         content: |
-          # Gigamon Cloud Configuration
-          # Initial placeholder - Updated by configure_lab.py
           Registration:
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteIP: ${module.fm.public_ip}
+            remoteAddress: ${module.fm.public_ip}
             remotePort: 443
 
     runcmd:
@@ -450,6 +457,9 @@ locals {
           [Install]
           WantedBy=multi-user.target
 
+    ssh_authorized_keys:
+      - ${tls_private_key.lab_key.public_key_openssh}
+
     runcmd:
       - systemctl daemon-reload
       - systemctl enable vxlan0.service
@@ -461,12 +471,6 @@ locals {
       # Allow ingress from UCT-V Controller and FM (if needed for tool VM logic)
       - ufw allow from ${module.uctv.private_ip} || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi
-      # Configure user SSH keys
-      - mkdir -p /home/${var.admin_username}/.ssh
-      - echo '${tls_private_key.lab_key.public_key_openssh}' >> /home/${var.admin_username}/.ssh/authorized_keys
-      - chown -R ${var.admin_username}:${var.admin_username} /home/${var.admin_username}/.ssh
-      - chmod 700 /home/${var.admin_username}/.ssh || true
-      - chmod 600 /home/${var.admin_username}/.ssh/authorized_keys || true
   EOF
 
   # prod1: iperf3 + uctv-agent config placeholder
@@ -485,14 +489,15 @@ locals {
         permissions: '0644'
         owner: root:root
         content: |
-          # Gigamon Cloud Configuration
-          # Initial placeholder - Updated by configure_lab.py
           Registration:
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteIP: ${module.fm.public_ip}
+            remoteAddress: ${module.fm.public_ip}
             remotePort: 443
+
+    ssh_authorized_keys:
+      - ${tls_private_key.lab_key.public_key_openssh}
 
     runcmd:
       - echo "Downloading UCT-V agent from Public Blob Storage..."
@@ -501,11 +506,6 @@ locals {
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
       - if [ -f /var/run/reboot-required ]; then reboot; fi
-      - mkdir -p /home/${var.admin_username}/.ssh
-      - echo '${tls_private_key.lab_key.public_key_openssh}' >> /home/${var.admin_username}/.ssh/authorized_keys
-      - chown -R ${var.admin_username}:${var.admin_username} /home/${var.admin_username}/.ssh
-      - chmod 700 /home/${var.admin_username}/.ssh || true
-      - chmod 600 /home/${var.admin_username}/.ssh/authorized_keys || true
   EOF
 
   # prod2: iperf3 + uctv-agent config placeholder
@@ -523,14 +523,15 @@ locals {
         permissions: '0644'
         owner: root:root
         content: |
-          # Gigamon Cloud Configuration
-          # Initial placeholder - Updated by configure_lab.py
           Registration:
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteIP: ${module.fm.public_ip}
+            remoteAddress: ${module.fm.public_ip}
             remotePort: 443
+
+    ssh_authorized_keys:
+      - ${tls_private_key.lab_key.public_key_openssh}
 
     runcmd:
       - echo "Downloading UCT-V agent from Public Blob Storage..."
@@ -539,11 +540,6 @@ locals {
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
       - if [ -f /var/run/reboot-required ]; then reboot; fi
-      - mkdir -p /home/${var.admin_username}/.ssh
-      - echo '${tls_private_key.lab_key.public_key_openssh}' >> /home/${var.admin_username}/.ssh/authorized_keys
-      - chown -R ${var.admin_username}:${var.admin_username} /home/${var.admin_username}/.ssh
-      - chmod 700 /home/${var.admin_username}/.ssh || true
-      - chmod 600 /home/${var.admin_username}/.ssh/authorized_keys || true
   EOF
 }
 
@@ -649,24 +645,22 @@ resource "random_string" "fm_token" {
 # -----------------------------------------------------------------------------
 # Orchestration
 # -----------------------------------------------------------------------------
-resource "null_resource" "configure_lab" {
-  depends_on = [
-    module.fm,
-    module.uctv,
-    module.vseries,
-    module.tool_vm, # Added dependency
-    module.prod1,
-    module.prod2,
-    local_file.lab_key_pem
-  ]
+data "azurerm_client_config" "current" {}
 
-  triggers = {
-    script_hash = filemd5("${path.module}/scripts/configure_lab.py")
-    fm_id       = module.fm.vm_id
-  }
-
-  provisioner "local-exec" {
-    command     = "& '${path.module}/scripts/.venv/Scripts/python.exe' ${path.module}/scripts/configure_lab.py --fm-ip ${module.fm.public_ip} --uctv-ip ${module.uctv.private_ip} --key-path ${local_file.lab_key_pem.filename} --fm-group '${var.fm_group_name}' --fm-subgroup '${var.fm_subgroup_name}' --fm-password '${var.fm_password}' --prod-ips '${module.prod1.public_ip},${module.prod2.public_ip}' --uctv-public-ip '${module.uctv.public_ip}' --vseries-public-ip '${module.vseries.public_ip}' --tool-public-ip '${module.tool_vm.public_ip}'"
-    interpreter = ["PowerShell", "-Command"]
-  }
+resource "local_file" "configure_script" {
+  filename = "${path.module}/scripts/configure_lab.py"
+  content = templatefile("${path.module}/scripts/configure_lab.py.tftpl", {
+    fm_ip             = module.fm.public_ip
+    uctv_ip           = module.uctv.private_ip
+    uctv_public_ip    = module.uctv.public_ip
+    vseries_public_ip = module.vseries.public_ip
+    tool_public_ip    = module.tool_vm.public_ip
+    prod_ips          = join(",", [module.prod1.public_ip, module.prod2.public_ip])
+    key_path          = abspath(local_file.lab_key_pem.filename)
+    username          = var.admin_username
+    fm_group          = var.fm_group_name
+    fm_subgroup       = var.fm_subgroup_name
+    subscription_id   = data.azurerm_client_config.current.subscription_id
+    tenant_id         = data.azurerm_client_config.current.tenant_id
+  })
 }
