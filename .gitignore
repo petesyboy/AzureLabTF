@@ -28,3 +28,9 @@ terraform.rc
 .vscode/
 .idea/
 *.swp
+
+# Lab Secrets
+lab_key.pem
+*.pem
+*.key
+scripts/.venv/
