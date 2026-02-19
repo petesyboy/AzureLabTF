@@ -59,6 +59,11 @@ output "prod2_private_ip" {
   value       = module.prod2.private_ip
 }
 
+output "tool_vm_public_ip" {
+  description = "Public IP address of the Tool VM (Visibility Subnet). Hosts ntopng and ends VXLAN."
+  value       = module.tool_vm.public_ip
+}
+
 # FM Token Output
 output "fm_token_value" {
   description = "FM token string. Copy to /etc/gigamon-cloud.conf on UCT-V and UCT-V agents for authentication."

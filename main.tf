@@ -385,32 +385,20 @@ locals {
       - echo "vSeries Node initialized. Waiting for configuration..."
   EOF
 
-  # prod1: ntopng + iperf3 + vxlan0 + uctv-agent config placeholder
-  prod1_cloud_init = <<-EOF
+
+
+  # Tool VM: ntopng + VXLAN termination
+  # Deployed in Visibility Subnet
+  tool_vm_cloud_init = <<-EOF
     #cloud-config
     package_upgrade: true
     packages:
       - ntopng
-      - iperf3
       - ufw
       - curl
       - jq
 
     write_files:
-      # UCT-V Agent Config Placeholder
-      - path: /etc/gigamon-cloud.conf
-        permissions: '0644'
-        owner: root:root
-        content: |
-          # Gigamon Cloud Configuration
-          # Initial placeholder - Updated by configure_lab.py
-          Registration:
-            groupName: ${var.fm_group_name}
-            subGroupName: ${var.fm_subgroup_name}
-            token: PLACEHOLDER_TOKEN
-            remoteIP: ${module.fm.public_ip}
-            remotePort: 443
-
       # Script to configure VXLAN interface
       - path: /usr/local/sbin/configure-vxlan0.sh
         permissions: '0755'
@@ -463,11 +451,44 @@ locals {
       - systemctl start ntopng || true
       # Add local firewall exception for VXLAN UDP 4789 (no-op if ufw disabled)
       - ufw allow 4789/udp || true
-      # Allow ingress from UCT-V Controller and FM
+      # Allow ingress from UCT-V Controller and FM (if needed for tool VM logic)
       - ufw allow from ${module.uctv.private_ip} || true
-      - ufw allow from ${module.fm.private_ip} || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi
       # Configure user SSH keys
+      - mkdir -p /home/${var.admin_username}/.ssh
+      - echo '${tls_private_key.lab_key.public_key_openssh}' >> /home/${var.admin_username}/.ssh/authorized_keys
+      - chown -R ${var.admin_username}:${var.admin_username} /home/${var.admin_username}/.ssh
+      - chmod 700 /home/${var.admin_username}/.ssh || true
+      - chmod 600 /home/${var.admin_username}/.ssh/authorized_keys || true
+  EOF
+
+  # prod1: iperf3 + uctv-agent config placeholder
+  # Removed ntopng/vxlan from here
+  prod1_cloud_init = <<-EOF
+    #cloud-config
+    package_upgrade: true
+    packages:
+      - iperf3
+      - curl
+      - jq
+
+    write_files:
+      # UCT-V Agent Config Placeholder
+      - path: /etc/gigamon-cloud.conf
+        permissions: '0644'
+        owner: root:root
+        content: |
+          # Gigamon Cloud Configuration
+          # Initial placeholder - Updated by configure_lab.py
+          Registration:
+            groupName: ${var.fm_group_name}
+            subGroupName: ${var.fm_subgroup_name}
+            token: PLACEHOLDER_TOKEN
+            remoteIP: ${module.fm.public_ip}
+            remotePort: 443
+
+    runcmd:
+      - if [ -f /var/run/reboot-required ]; then reboot; fi
       - mkdir -p /home/${var.admin_username}/.ssh
       - echo '${tls_private_key.lab_key.public_key_openssh}' >> /home/${var.admin_username}/.ssh/authorized_keys
       - chown -R ${var.admin_username}:${var.admin_username} /home/${var.admin_username}/.ssh
@@ -518,6 +539,34 @@ locals {
 # -----------------------------------------------------------------------------
 # These modules deploy standard Ubuntu VMs to act as traffic sources/destinations.
 # They use the cloud-init scripts defined in locals above.
+
+
+# -----------------------------------------------------------------------------
+# Tool VM (ntopng / VXLAN termination)
+# -----------------------------------------------------------------------------
+module "tool_vm" {
+  source = "./modules/linux-vm"
+
+  vm_name             = "tool-vm"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
+  vm_size             = var.ubuntu_vm_size
+  admin_username      = var.admin_username
+  ssh_public_key      = tls_private_key.lab_key.public_key_openssh
+  image_publisher     = local.ubuntu_publisher
+  image_offer         = local.ubuntu_offer
+  image_sku           = local.ubuntu_sku
+  image_version       = local.ubuntu_version
+  custom_data         = base64encode(local.tool_vm_cloud_init)
+  os_disk_name        = "osdisk-tool"
+  pip_name            = "pip-tool"
+  nic_name            = "nic-tool"
+  ip_config_name      = "ipconfig-tool"
+  role_tag            = "tool-vm"
+  owner_email         = var.gigamon_email
+  project_tag         = var.project_name
+}
 
 module "prod1" {
   source = "./modules/linux-vm"
