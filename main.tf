@@ -17,11 +17,12 @@
 # The deployment creates a complete network topology with the following components:
 #
 # 1. NETWORKING INFRASTRUCTURE
-#    - Azure Virtual Network (VNet) with CIDR 10.0.0.0/16
-#    - Three subnets:
-#      • Management Subnet (10.0.1.0/24) - Control plane operations
-#      • Visibility Subnet (10.0.2.0/24) - Gigamon components (FM, UCT-V, vSeries)
-#      • Production Subnet (10.0.3.0/24) - Workload VMs and traffic sources/destinations
+#    - Two Azure Virtual Networks (VNets)
+#    - Visibility VNet (10.0.0.0/16)
+#    - Production VNet (10.10.0.0/16)
+#    - Two subnets (in separate peered VNets):
+#      • Visibility Subnet (10.0.1.0/24) - Gigamon components (FM, UCT-V, vSeries) + Tool VM
+#      • Production Subnet (10.10.1.0/24) - Workload VMs and traffic sources/destinations
 #    - Network Security Groups (NSGs) with rules for:
 #      • SSH access (port 22) from admin machines
 #      • HTTP/HTTPS (ports 80, 443) for web interfaces
@@ -52,11 +53,16 @@
 #      • Orchestration is handled by GigaVUE-FM, not Azure service fabric
 #
 # 3. WORKLOAD & TRAFFIC GENERATION
+#    - Tool VM (tool-vm)
+#      • Dedicated visibility and analysis node in the Visibility Subnet
+#      • Includes: ntopng (network traffic monitoring)
+#      • Configured with VXLAN interface (vxlan0, VNI=123, dstport=4789) to receive mirrored traffic
+#      • Systemd service ensures VXLAN persistence across reboots
+#
 #    - Production Ubuntu VM 1 (prod-ubuntu-1)
 #      • Complex workload with traffic analytics
-#      • Includes: ntopng (network traffic monitoring), iperf3 (traffic generation)
-#      • Configured with VXLAN interface (vxlan0, VNI=123, dstport=4789)
-#      • Systemd service ensures VXLAN persistence across reboots
+#      • Includes: iperf3 (traffic generation)
+#      • UCT-V Agent installed for traffic mirroring
 #      • Can act as traffic source or destination
 #    
 #    - Production Ubuntu VM 2 (prod-ubuntu-2)
@@ -96,6 +102,7 @@
 # 
 # - fm_public_ip          : Access the GigaVUE-FM web interface (https://<IP>)
 # - uctv_public_ip        : UCT-V Controller management/troubleshooting
+# - tool_vm_public_ip     : Tool VM access (SSH, ntopng UI on port 3000)
 # - vseries_public_ip     : vSeries Node management/troubleshooting
 # - prod1_public_ip       : Production Ubuntu VM 1 SSH access
 # - prod2_public_ip       : Production Ubuntu VM 2 SSH access
@@ -107,7 +114,7 @@
 # This lab environment supports:
 # 1. Traffic Visibility Testing: Capture and analyze traffic between prod VMs
 # 2. Inline Processing: vSeries node can inspect/modify traffic in flight
-# 3. Network Telemetry: ntopng on prod1 provides real-time traffic analytics
+# 3. Network Telemetry: ntopng on Tool VM provides real-time traffic analytics
 # 4. Performance Benchmarking: iperf3 generates various load profiles
 # 5. VXLAN Overlay Testing: Test encapsulated traffic over the vSeries
 # 6. Cloud-Native Design: Full IaC approach with modular, reusable components
@@ -202,7 +209,7 @@ resource "azurerm_resource_group" "rg" {
 # -----------------------------------------------------------------------------
 # Networking Module
 # -----------------------------------------------------------------------------
-# This module deploys the Virtual Network (VNet), Subnets (Management, Visibility, Production),
+# This module deploys the Virtual Network (VNet), Subnets (Visibility, Production),
 # Network Security Groups (NSGs), and other networking components.
 # See ./modules/networking for implementation details.
 
@@ -627,4 +634,29 @@ module "prod2" {
 resource "random_string" "fm_token" {
   length  = 32
   special = false
+}
+
+# -----------------------------------------------------------------------------
+# Orchestration
+# -----------------------------------------------------------------------------
+resource "null_resource" "configure_lab" {
+  depends_on = [
+    module.fm,
+    module.uctv,
+    module.vseries,
+    module.tool_vm, # Added dependency
+    module.prod1,
+    module.prod2,
+    local_file.lab_key_pem
+  ]
+
+  triggers = {
+    script_hash = filemd5("${path.module}/scripts/configure_lab.py")
+    fm_id       = module.fm.vm_id
+  }
+
+  provisioner "local-exec" {
+    command     = "& '${path.module}/scripts/.venv/Scripts/python.exe' ${path.module}/scripts/configure_lab.py --fm-ip ${module.fm.public_ip} --uctv-ip ${module.uctv.private_ip} --key-path ${local_file.lab_key_pem.filename} --fm-group '${var.fm_group_name}' --fm-subgroup '${var.fm_subgroup_name}' --fm-password '${var.fm_password}' --prod-ips '${module.prod1.public_ip},${module.prod2.public_ip}' --uctv-public-ip '${module.uctv.public_ip}' --vseries-public-ip '${module.vseries.public_ip}' --tool-public-ip '${module.tool_vm.public_ip}'"
+    interpreter = ["PowerShell", "-Command"]
+  }
 }

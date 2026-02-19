@@ -69,6 +69,35 @@ def update_vm_config(ip, username, key_path, fm_ip, group_name, subgroup_name, t
     except Exception as e:
         print(f"  Failed to configure VM {ip}: {e}")
 
+import platform
+import subprocess
+
+def ping_vm(ip, description):
+    """
+    Pings a VM and returns True if successful, False otherwise.
+    Uses system ping command.
+    """
+    print(f"Pinging {description} at {ip}...")
+    
+    # Determine the ping command based on the OS
+    param = '-n' if platform.system().lower() == 'windows' else '-c'
+    command = ['ping', param, '1', ip]
+    
+    try:
+        # Run the ping command
+        # stdout=subprocess.DEVNULL suppresses the output of the ping command itself
+        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        if result.returncode == 0:
+            print(f"  [PASS] {description} is reachable.")
+            return True
+        else:
+            print(f"  [FAIL] {description} is NOT reachable.")
+            return False
+    except Exception as e:
+        print(f"  [ERROR] Failed to execute ping: {e}")
+        return False
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--fm-ip", required=True)
@@ -79,6 +108,8 @@ def main():
     parser.add_argument("--fm-subgroup", required=True)
     parser.add_argument("--fm-password", required=True)
     parser.add_argument("--prod-ips", required=True)
+    parser.add_argument("--vseries-public-ip", required=True)
+    parser.add_argument("--tool-public-ip", required=True)
     parser.add_argument("--username", default="azureuser")
     args = parser.parse_args()
     
@@ -91,11 +122,37 @@ def main():
     # Configure UCT-V Controller (via public IP)
     update_vm_config(args.uctv_public_ip, args.username, args.key_path, args.fm_ip, args.fm_group, args.fm_subgroup, token)
     
-    # Configure Prod VMs
-    for ip in args.prod_ips.split(','):
-        if ip:
-            update_vm_config(ip, args.username, args.key_path, args.fm_ip, args.fm_group, args.fm_subgroup, token)
+    # Configure Prod VMs collected into a list for iteration
+    prod_vm_ips = [ip for ip in args.prod_ips.split(',') if ip]
+    for i, ip in enumerate(prod_vm_ips):
+        update_vm_config(ip, args.username, args.key_path, args.fm_ip, args.fm_group, args.fm_subgroup, token)
             
+    print("\n------------------------------------------------------------")
+    print("Verifying Connectivity (Ping Check)")
+    print("------------------------------------------------------------")
+    
+    # List of VMs to ping: (IP, Description)
+    vms_to_ping = [
+        (args.fm_ip, "GigaVUE-FM"),
+        (args.uctv_public_ip, "UCT-V Controller"),
+        (args.vseries_public_ip, "vSeries Node"),
+        (args.tool_public_ip, "Tool VM")
+    ]
+    
+    # Add Prod VMs to the list
+    for i, ip in enumerate(prod_vm_ips):
+        vms_to_ping.append((ip, f"Prod VM {i+1}"))
+        
+    # Execute pings
+    passed_count = 0
+    for ip, desc in vms_to_ping:
+        if ping_vm(ip, desc):
+            passed_count += 1
+            
+    print("------------------------------------------------------------")
+    print(f"Ping Check Complete: {passed_count}/{len(vms_to_ping)} VMs reachable.")
+    print("------------------------------------------------------------")
+    
     print("\nLab Configuration Complete!")
 
 if __name__ == "__main__":
