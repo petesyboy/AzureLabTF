@@ -36,8 +36,9 @@ The `scripts/configure_lab.py` script is automatically triggered by Terraform af
     *   The FM Group and Subgroup names.
     *   The Authentication Token.
     *   The FM IP address.
-5.  **Restart Services**: Restarts the `uctv-agent` service to initiate registration with the fabric.
-6.  **Verify Connectivity**: Pings all nodes to ensure the management network is functional.
+5.  **Install UCT-V Agent**: The agent is automatically downloaded from a public Azure Blob Storage URL (`https://connollystorageaccount.blob.core.windows.net/uctv-agents/...`) and installed via cloud-init.
+6.  **Restart Services**: Restarts the `uctv-agent` service to initiate registration with the fabric.
+7.  **Verify Connectivity**: Pings all nodes to ensure the management network is functional.
 
 ## Deployment Instructions
 

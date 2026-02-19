@@ -495,6 +495,11 @@ locals {
             remotePort: 443
 
     runcmd:
+      - echo "Downloading UCT-V agent from Public Blob Storage..."
+      - curl -L "https://connollystorageaccount.blob.core.windows.net/uctv-agents/gigamon-gigavue-uctv-6.12.00-amd64.deb" -o /tmp/uctv-agent.deb
+      - echo "Installing UCT-V agent..."
+      - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
+      - echo "UCT-V agent installed."
       - if [ -f /var/run/reboot-required ]; then reboot; fi
       - mkdir -p /home/${var.admin_username}/.ssh
       - echo '${tls_private_key.lab_key.public_key_openssh}' >> /home/${var.admin_username}/.ssh/authorized_keys
@@ -528,6 +533,11 @@ locals {
             remotePort: 443
 
     runcmd:
+      - echo "Downloading UCT-V agent from Public Blob Storage..."
+      - curl -L "https://connollystorageaccount.blob.core.windows.net/uctv-agents/gigamon-gigavue-uctv-6.12.00-amd64.deb" -o /tmp/uctv-agent.deb
+      - echo "Installing UCT-V agent..."
+      - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
+      - echo "UCT-V agent installed."
       - if [ -f /var/run/reboot-required ]; then reboot; fi
       - mkdir -p /home/${var.admin_username}/.ssh
       - echo '${tls_private_key.lab_key.public_key_openssh}' >> /home/${var.admin_username}/.ssh/authorized_keys
