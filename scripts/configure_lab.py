@@ -25,9 +25,9 @@ def check_fm_ready(fm_ip, retries=60, delay=10):
         time.sleep(delay)
     return False
 
-def get_fm_token(fm_ip, password):
+def get_fm_token(fm_ip, password, username="admin"):
     url = f"https://{fm_ip}/api/v1.2/authen"
-    payload = {"username": "admin", "password": password}
+    payload = {"username": username, "password": password}
     try:
         response = requests.post(url, json=payload, verify=False, timeout=10)
         response.raise_for_status()
