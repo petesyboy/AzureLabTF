@@ -43,6 +43,29 @@ variable "gigamon_email" {
 }
 
 # -----------------------------------------------------------------------------
+# FM Configuration & Credentials
+# -----------------------------------------------------------------------------
+
+variable "fm_password" {
+  type        = string
+  description = "Password for the 'admin' user on GigaVUE-FM. Used for API access."
+  default     = "admin123A!!" # Default for fresh deployments. Change immediately!
+  sensitive   = true
+}
+
+variable "fm_group_name" {
+  type        = string
+  description = "Monitoring Domain (Group) name to create on FM."
+  default     = "Azure-3PO-MD"
+}
+
+variable "fm_subgroup_name" {
+  type        = string
+  description = "Connection (Sub-Group) name to create on FM."
+  default     = "Azure-3PO-Connection"
+}
+
+# -----------------------------------------------------------------------------
 # General VM Configuration
 # -----------------------------------------------------------------------------
 
