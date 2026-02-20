@@ -60,3 +60,16 @@ resource "azurerm_linux_virtual_machine" "vm" {
     Project = var.project_tag
   }
 }
+
+resource "azurerm_dev_test_global_vm_shutdown_schedule" "shutdown" {
+  virtual_machine_id = azurerm_linux_virtual_machine.vm.id
+  location           = azurerm_linux_virtual_machine.vm.location
+  enabled            = true
+
+  daily_recurrence_time = "1900"
+  timezone              = "GMT Standard Time"
+
+  notification_settings {
+    enabled = false
+  }
+}

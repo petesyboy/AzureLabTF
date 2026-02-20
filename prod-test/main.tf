@@ -240,6 +240,19 @@ resource "azurerm_linux_virtual_machine" "prod1" {
   }
 }
 
+resource "azurerm_dev_test_global_vm_shutdown_schedule" "prod1_shutdown" {
+  virtual_machine_id = azurerm_linux_virtual_machine.prod1.id
+  location           = azurerm_linux_virtual_machine.prod1.location
+  enabled            = true
+
+  daily_recurrence_time = "1900"
+  timezone              = "GMT Standard Time"
+
+  notification_settings {
+    enabled = false
+  }
+}
+
 resource "azurerm_linux_virtual_machine" "prod2" {
   name                  = "prod-ubuntu-2"
   location              = azurerm_resource_group.rg.location
@@ -273,6 +286,19 @@ resource "azurerm_linux_virtual_machine" "prod2" {
   tags = {
     Role  = "production-app"
     owner = var.gigamon_email
+  }
+}
+
+resource "azurerm_dev_test_global_vm_shutdown_schedule" "prod2_shutdown" {
+  virtual_machine_id = azurerm_linux_virtual_machine.prod2.id
+  location           = azurerm_linux_virtual_machine.prod2.location
+  enabled            = true
+
+  daily_recurrence_time = "1900"
+  timezone              = "GMT Standard Time"
+
+  notification_settings {
+    enabled = false
   }
 }
 

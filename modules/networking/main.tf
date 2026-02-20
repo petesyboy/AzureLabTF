@@ -118,6 +118,32 @@ resource "azurerm_network_security_group" "nsg_visibility" {
     destination_address_prefix = "*"
   }
 
+  # UCT-V agent registration (TCP 8892)
+  security_rule {
+    name                       = "Allow-UCTV-Agent-Registration-8892"
+    priority                   = 145
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "8892"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  # FM <-> vSeries management API (TCP 8889)
+  security_rule {
+    name                       = "Allow-vSeries-FM-8889"
+    priority                   = 146
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "8889"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
   # VXLAN from UCT-V agents to vSeries (UDP 4789)
   security_rule {
     name                       = "Allow-VXLAN-4789"
