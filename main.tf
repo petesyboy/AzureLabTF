@@ -133,22 +133,6 @@
 # Terraform + AzureRM provider configuration
 ############################################################
 
-# -----------------------------------------------------------------------------
-# Terraform Configuration
-# -----------------------------------------------------------------------------
-# This block configures the Terraform settings, including the required providers
-# and the backend for state storage (local in this case).
-resource "null_resource" "deployment_start" {
-  triggers = {
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command     = "[int](Get-Date -UFormat %s) | Out-File .start_time -Encoding ascii"
-    interpreter = ["PowerShell", "-Command"]
-  }
-}
-
 terraform {
   required_version = ">= 1.5.0"
 
@@ -172,11 +156,6 @@ provider "azurerm" {
 ############################################################
 # Resource Group
 ############################################################
-
-# -----------------------------------------------------------------------------
-# Resource Group
-# -----------------------------------------------------------------------------
-# ... existing resource group code ...
 
 # -----------------------------------------------------------------------------
 # SSH Key Generation
@@ -327,11 +306,16 @@ module "vseries" {
   custom_data         = base64encode(local.vseries_cloud_init)
   os_disk_name        = "osdisk-vseries"
   pip_name            = "pip-vseries"
-  nic_name            = "nic-vseries"
+  nic_name            = "nic-vseries-mgmt"
   ip_config_name      = "ipconfig-vseries"
   role_tag            = "vseries"
   owner_email         = var.gigamon_email
   project_tag         = var.project_name
+
+  # Second NIC for data-plane / inline traffic (connects to production subnet)
+  secondary_subnet_id  = module.networking.production_subnet_id
+  secondary_nic_name   = "nic-vseries-data"
+  create_secondary_nic = true
 }
 
 ############################################################

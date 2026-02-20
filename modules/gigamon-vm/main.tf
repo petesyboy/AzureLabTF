@@ -24,12 +24,30 @@ resource "azurerm_network_interface" "nic" {
   }
 }
 
+# Optional second NIC for data-plane traffic (e.g. vSeries inline interface)
+resource "azurerm_network_interface" "nic2" {
+  count               = var.create_secondary_nic ? 1 : 0
+  name                = var.secondary_nic_name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+
+  ip_configuration {
+    name                          = "ipconfig-secondary"
+    subnet_id                     = var.secondary_subnet_id
+    private_ip_address_allocation = "Dynamic"
+  }
+}
+
 resource "azurerm_virtual_machine" "vm" {
-  name                  = var.vm_name
-  location              = var.location
-  resource_group_name   = var.resource_group_name
-  network_interface_ids = [azurerm_network_interface.nic.id]
-  vm_size               = var.vm_size
+  name                = var.vm_name
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  network_interface_ids = var.create_secondary_nic ? [
+    azurerm_network_interface.nic.id,
+    azurerm_network_interface.nic2[0].id
+  ] : [azurerm_network_interface.nic.id]
+  primary_network_interface_id = azurerm_network_interface.nic.id
+  vm_size                      = var.vm_size
 
   delete_os_disk_on_termination    = true
   delete_data_disks_on_termination = true

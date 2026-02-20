@@ -30,11 +30,6 @@ variable "admin_username" {
   description = "Admin username for SSH access to all VMs. Do not use 'admin' or 'root' as they are reserved/blocked by Azure."
 }
 # Note: For production, consider using Azure Key Vault to manage SSH keys securely.
-variable "admin_ssh_public_key" {
-  type        = string
-  description = "SSH public key used for admin access to all VMs."
-  default     = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC3ox6dPw15tN4XqpgyA7iji2o4VcDFM8tj3gZsTu+d7z8gTGPsYyJ8NmppHDsm6lnUSgdVxCZTzCAXZ2AGNiUTyYMvL6afYLEN0Gb2a1bSpES7nRZZp+aS8dBITNRMqW05AL8NaVoDEKAiU5YNohbHMxwJ4uNKl/P77On1R2W53h1IwjCCSr2YMR4g9CEy7Nkxt9fO+1xPORn0ComEyk6zxrnLN4vaOIaP1B3n0qbDu/6dEzQZ4a1sCkCJsyBKuJ5UZSwVCJEGxi1vmRj+BpInM/ktC91WpLuuDi9dGuGTlX6BFn73bbQTyYfdnPl86AuEHmak7m80N+G45ts/hcs9eEVWRDhdQxF9FjepC4ZG6TWR4YOay10Cn0MM4BCHe/NmePLhsoXKrBplgVwxiutL9DqwzFND4FpJAzIQ9lIzQdhmx47lP24FGuUN7JXl7RBW/RE0YC6rNXkbQqWmchohfgrieVXxhYsZTITfz7eBD/e5qouPo35iksvoSRr/RO0= generated-by-azure"
-}
 
 variable "gigamon_email" {
   type        = string
@@ -46,12 +41,9 @@ variable "gigamon_email" {
 # FM Configuration & Credentials
 # -----------------------------------------------------------------------------
 
-variable "fm_password" {
-  type        = string
-  description = "Password for the 'admin' user on GigaVUE-FM. Used for API access."
-  default     = "admin123A!!" # Default for fresh deployments. Change immediately!
-  sensitive   = true
-}
+# -----------------------------------------------------------------------------
+# FM Configuration & Credentials
+# -----------------------------------------------------------------------------
 
 variable "fm_group_name" {
   type        = string

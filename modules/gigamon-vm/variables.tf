@@ -96,3 +96,21 @@ variable "custom_data" {
   default     = ""
   description = "Base64-encoded cloud-init or custom data script to execute on first boot."
 }
+
+variable "secondary_subnet_id" {
+  type        = string
+  default     = ""
+  description = "Optional subnet ID for a second NIC (data-plane). If empty, no second NIC is created."
+}
+
+variable "secondary_nic_name" {
+  type        = string
+  default     = ""
+  description = "Name for the optional second NIC."
+}
+
+variable "create_secondary_nic" {
+  type        = bool
+  default     = false
+  description = "Set to true to create a second NIC. Required because count cannot depend on computed values like subnet IDs."
+}
