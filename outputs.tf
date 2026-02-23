@@ -100,3 +100,8 @@ output "deployment_summary" {
     ]
   }
 }
+
+output "lab_key_pem_filename" {
+  description = "The absolute path to the generated SSH private key file."
+  value       = local_file.lab_key_pem.filename
+}

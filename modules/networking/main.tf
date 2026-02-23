@@ -2,7 +2,7 @@
 # Networking Module – VNets, Subnets, NSGs
 ############################################################
 
-# Visibility VNet – hosts FM, UCT-V controller, vSeries, and Tool VM
+# Main VNet – hosts all resources: FM, UCT-V controller, vSeries, Tool VM, and Production VMs
 resource "azurerm_virtual_network" "visibility_vnet" {
   name                = "visibility-vnet"
   address_space       = ["10.0.0.0/16"]
@@ -16,6 +16,7 @@ resource "azurerm_virtual_network" "visibility_vnet" {
   }
 }
 
+# Visibility Subnet – hosts Gigamon components (FM, UCT-V, vSeries) and Tool VM
 resource "azurerm_subnet" "visibility_subnet" {
   name                 = "visibility-subnet"
   resource_group_name  = var.resource_group_name
@@ -23,25 +24,13 @@ resource "azurerm_subnet" "visibility_subnet" {
   address_prefixes     = ["10.0.1.0/24"]
 }
 
-# Production VNet – Ubuntu application VMs (for UCT-V agents)
-resource "azurerm_virtual_network" "production_vnet" {
-  name                = "production-vnet"
-  address_space       = ["10.10.0.0/16"]
-  location            = var.location
-  resource_group_name = var.resource_group_name
-
-  tags = {
-    Role    = "production"
-    owner   = var.owner_email
-    Project = var.project_tag
-  }
-}
-
+# Production Subnet – hosts application workload VMs (Ubuntu VMs with UCT-V agents)
+# Now in the same VNet as visibility subnet to allow vSeries dual-NIC configuration
 resource "azurerm_subnet" "production_subnet" {
   name                 = "production-subnet"
   resource_group_name  = var.resource_group_name
-  virtual_network_name = azurerm_virtual_network.production_vnet.name
-  address_prefixes     = ["10.10.1.0/24"]
+  virtual_network_name = azurerm_virtual_network.visibility_vnet.name
+  address_prefixes     = ["10.0.2.0/24"]
 }
 
 ############################################################
@@ -208,36 +197,11 @@ resource "azurerm_network_security_group" "nsg_visibility" {
     source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
-}
 
-resource "azurerm_subnet_network_security_group_association" "visibility_nsg_assoc" {
-  subnet_id                 = azurerm_subnet.visibility_subnet.id
-  network_security_group_id = azurerm_network_security_group.nsg_visibility.id
-}
-
-# NSG for production subnet – Ubuntu VMs with UCT-V agent and VXLAN
-resource "azurerm_network_security_group" "nsg_production" {
-  name                = "nsg-production"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-
-  # SSH
-  security_rule {
-    name                       = "Allow-SSH"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  # UCT-V agent control/management from UCT-V Controller (TCP 9902)
+  # UCT-V agent control/management (TCP 9902) - allows traffic from prod subnet to visibility
   security_rule {
     name                       = "Allow-UCTV-Agent-9902"
-    priority                   = 110
+    priority                   = 190
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
@@ -246,70 +210,15 @@ resource "azurerm_network_security_group" "nsg_production" {
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "*"
   }
-
-  # VXLAN tunnel traffic to prod VMs (UDP 4789)
-  security_rule {
-    name                       = "Allow-VXLAN-Prod-4789"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Udp"
-    source_port_range          = "*"
-    destination_port_range     = "4789"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  # ICMP inbound (ping)
-  security_rule {
-    name                       = "Allow-ICMP-Inbound"
-    priority                   = 130
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Icmp"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  # ICMP outbound (ping replies)
-  security_rule {
-    name                       = "Allow-ICMP-Outbound"
-    priority                   = 100
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "Icmp"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
 }
 
+resource "azurerm_subnet_network_security_group_association" "visibility_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.visibility_subnet.id
+  network_security_group_id = azurerm_network_security_group.nsg_visibility.id
+}
+
+# Apply same NSG to production subnet (both subnets are in the same VNet)
 resource "azurerm_subnet_network_security_group_association" "production_nsg_assoc" {
   subnet_id                 = azurerm_subnet.production_subnet.id
-  network_security_group_id = azurerm_network_security_group.nsg_production.id
-}
-
-############################################################
-# VNet Peering
-############################################################
-
-resource "azurerm_virtual_network_peering" "vis_to_prod" {
-  name                         = "peer-visibility-to-production"
-  resource_group_name          = var.resource_group_name
-  virtual_network_name         = azurerm_virtual_network.visibility_vnet.name
-  remote_virtual_network_id    = azurerm_virtual_network.production_vnet.id
-  allow_virtual_network_access = true
-  allow_forwarded_traffic      = true
-}
-
-resource "azurerm_virtual_network_peering" "prod_to_vis" {
-  name                         = "peer-production-to-visibility"
-  resource_group_name          = var.resource_group_name
-  virtual_network_name         = azurerm_virtual_network.production_vnet.name
-  remote_virtual_network_id    = azurerm_virtual_network.visibility_vnet.id
-  allow_virtual_network_access = true
-  allow_forwarded_traffic      = true
+  network_security_group_id = azurerm_network_security_group.nsg_visibility.id
 }

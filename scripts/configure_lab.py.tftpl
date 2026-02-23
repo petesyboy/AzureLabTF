@@ -83,8 +83,8 @@ def get_user_token():
     print(f"1. Log in to GigaVUE-FM: {FM_URL}")
     print("   (Default credentials: admin / admin123A!!)")
     print("2. Accept the EULA and change the password as prompted.")
-    print("3. Navigate to: User Profile (top right) > API Token.")
-    print("4. Click 'Generate' and copy the token.")
+    print("3. Navigate to: Settings > Authentication > GigaVUE-FM User Management > Tokens")
+    print("4. Create a fabric management token and copy it.")
     print("="*60)
     
     while True:
@@ -281,11 +281,11 @@ def create_anycloud_connection(token, domain_id, connection_alias):
         print(f"Error creating connection: {e}")
 
 
-def update_vm_config(vm_ip, token, service_name="gigamon-gigavue-uctv", remote_address=None):
+def update_vm_config(vm_ip, token, service_name="gigamon-gigavue-uctv", remote_address=None, remote_port=443):
     """Updates the Gigamon agent configuration on a VM."""
     if remote_address is None:
         remote_address = FM_IP  # Default: register with FM
-    print(f"Configuring agent on {vm_ip} (Service: {service_name}, RemoteAddress: {remote_address})...")
+    print(f"Configuring agent on {vm_ip} (Service: {service_name}, RemoteAddress: {remote_address}, RemotePort: {remote_port})...")
     
     # Check if config file exists
     check_file_cmd = "test -f /etc/gigamon-cloud.conf && echo 'FOUND' || echo 'NOT_FOUND'"
@@ -299,7 +299,7 @@ def update_vm_config(vm_ip, token, service_name="gigamon-gigavue-uctv", remote_a
             f"  subGroupName: {FM_SUBGROUP}",
             f"  token: {token}",
             f"  remoteAddress: {remote_address}",
-            "  remotePort: 443"
+            f"  remotePort: {remote_port}"
         ]
         cmd_str = "\\n".join(lines)
         create_cmd = f"printf '{cmd_str}' | sudo tee /etc/gigamon-cloud.conf"
@@ -320,12 +320,19 @@ def update_vm_config(vm_ip, token, service_name="gigamon-gigavue-uctv", remote_a
         # 3. Set the correct remoteAddress value
         run_ssh_command(vm_ip, f"sudo sed -i 's|remoteAddress:.*|remoteAddress: {remote_address}|g' /etc/gigamon-cloud.conf")
         
-        # 4. Update Token (handle both PLACEHOLDER and PRICEHOLDER just in case)
+        # 4. Set the correct remotePort value
+        run_ssh_command(vm_ip, f"sudo sed -i 's|remotePort:.*|remotePort: {remote_port}|g' /etc/gigamon-cloud.conf")
+        
+        # 5. Update Token (handle both PLACEHOLDER and PRICEHOLDER just in case)
         sed_cmd = f"sed -i 's/PLACEHOLDER_TOKEN/{token}/g' /etc/gigamon-cloud.conf"
         sed_cmd2 = f"sed -i 's/PRICEHOLDER_TOKEN/{token}/g' /etc/gigamon-cloud.conf"
         
         run_ssh_command(vm_ip, sed_cmd, use_sudo=True)
         run_ssh_command(vm_ip, sed_cmd2, use_sudo=True)
+
+    # Show the final config for verification
+    print(f"Final config on {vm_ip}:")
+    run_ssh_command(vm_ip, "cat /etc/gigamon-cloud.conf")
 
     # Restart service
     restart_cmd = f"systemctl restart {service_name}" 
@@ -366,16 +373,16 @@ def main():
     # 3. Configure Agents (SSH) - SECOND!
     print("\n--- Configuring Agents (SSH) ---")
     
-    # UCT-V Controller (Service Name: uctv-cntlr)
-    update_vm_config(UCTV_PUBLIC_IP, token, service_name="uctv-cntlr")
-    
-    # Prod VMs register with UCT-V Controller (not FM directly)
+    # UCT-V Controller (Service Name: uctv-cntlr) — registers to FM on port 443
+    update_vm_config(UCTV_PUBLIC_IP, token, service_name="uctv-cntlr", remote_port=443)
+
+    # vSeries (Service Name: vseries-node) — registers to FM on port 443
+    update_vm_config(VSERIES_PUBLIC_IP, token, service_name="vseries-node", remote_port=443)
+
+    # Prod VMs register with UCT-V Controller (not FM directly) on port 8892
     for ip in PROD_IPS:
         if ip:
-            update_vm_config(ip, token, service_name="uctv", remote_address=UCTV_PUBLIC_IP)
-            
-    # vSeries (Service Name: vseries-node)
-    update_vm_config(VSERIES_PUBLIC_IP, token, service_name="vseries-node")
+            update_vm_config(ip, token, service_name="uctv", remote_address=UCTV_IP, remote_port=8892)
 
     print("\n---------------------------------------------------------")
     print("Configuration Complete!")

@@ -477,8 +477,8 @@ locals {
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.fm.public_ip}
-            remotePort: 443
+            remoteAddress: ${module.uctv.private_ip}
+            remotePort: 8892
 
     ssh_authorized_keys:
       - ${tls_private_key.lab_key.public_key_openssh}
@@ -511,8 +511,8 @@ locals {
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.fm.public_ip}
-            remotePort: 443
+            remoteAddress: ${module.uctv.private_ip}
+            remotePort: 8892
 
     ssh_authorized_keys:
       - ${tls_private_key.lab_key.public_key_openssh}
