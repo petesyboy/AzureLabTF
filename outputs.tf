@@ -105,3 +105,38 @@ output "lab_key_pem_filename" {
   description = "The absolute path to the generated SSH private key file."
   value       = local_file.lab_key_pem.filename
 }
+
+# =============================================================================
+# SSH Connection Commands
+# =============================================================================
+# Copy-paste ready commands to SSH into each VM
+
+output "ssh_fm" {
+  description = "SSH command for GigaVUE-FM (Fabric Manager)"
+  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.fm.public_ip}"
+}
+
+output "ssh_uctv" {
+  description = "SSH command for UCT-V Controller"
+  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.uctv.public_ip}"
+}
+
+output "ssh_vseries" {
+  description = "SSH command for vSeries Node"
+  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.vseries.public_ip}"
+}
+
+output "ssh_tool_vm" {
+  description = "SSH command for Tool VM (ntopng / VXLAN receiver)"
+  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.tool_vm.public_ip}"
+}
+
+output "ssh_prod1" {
+  description = "SSH command for Production Ubuntu VM 1"
+  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.prod1.public_ip}"
+}
+
+output "ssh_prod2" {
+  description = "SSH command for Production Ubuntu VM 2"
+  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.prod2.public_ip}"
+}

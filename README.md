@@ -186,41 +186,93 @@ Once configured, you can access the environment using the generated key `lab_key
 terraform output
 ```
 
-Key outputs:
-*   `fm_public_ip`: URL for GigaVUE-FM
-*   `tool_vm_public_ip`: Access for ntopng
-*   `prod1_public_ip` / `prod2_public_ip`: SSH access for traffic generation
+The output includes:
+- **IPs and URLs**: `fm_public_ip`, `tool_vm_public_ip`, `prod1_public_ip`, `prod2_public_ip`, etc.
+- **SSH Commands** (ready to copy-paste): `ssh_fm`, `ssh_uctv`, `ssh_vseries`, `ssh_tool_vm`, `ssh_prod1`, `ssh_prod2`
+- **Key File Path**: `lab_key_pem_filename`
+
+For example, to SSH into the Tool VM:
+```bash
+terraform output ssh_tool_vm | xargs
+```
+
+Or retrieve all SSH commands at once:
+```bash
+terraform output -json | jq '.[] | select(.description | contains("SSH command")) | .value'
+```
 
 ## Usage & Verification
 
-### 1. Connecting to the Lab
-Use the SSH key generated in the project directory (`lab_key.pem`). The default admin username is `peter`:
+### 1. Getting SSH Commands
+After deployment, retrieve ready-to-paste SSH commands:
+
+```bash
+# Get SSH command for Tool VM
+terraform output ssh_tool_vm
+
+# Get SSH command for Production VM 1
+terraform output ssh_prod1
+
+# Get SSH command for Production VM 2
+terraform output ssh_prod2
+
+# Get all SSH commands
+terraform output | grep ssh_
+```
+
+Example output:
+```
+ssh_fm = "ssh -i /path/to/lab_key.pem peter@20.123.45.67"
+ssh_tool_vm = "ssh -i /path/to/lab_key.pem peter@20.123.45.68"
+ssh_prod1 = "ssh -i /path/to/lab_key.pem peter@20.123.45.69"
+ssh_prod2 = "ssh -i /path/to/lab_key.pem peter@20.123.45.70"
+ssh_uctv = "ssh -i /path/to/lab_key.pem peter@20.123.45.71"
+ssh_vseries = "ssh -i /path/to/lab_key.pem peter@20.123.45.72"
+```
+
+Simply copy and paste any of these commands to connect to the desired VM.
+
+### 2. Connecting to the Lab
+Use the SSH commands from step 1. For example:
 
 ```bash
 # Connect to Tool VM
-ssh -i lab_key.pem peter@<tool_vm_public_ip>
+ssh -i /path/to/lab_key.pem peter@<tool_vm_public_ip>
 
 # Connect to Production VM 1
-ssh -i lab_key.pem peter@<prod1_public_ip>
+ssh -i /path/to/lab_key.pem peter@<prod1_public_ip>
 ```
 
-### 2. Generating Traffic
+Or simply run the terraform output command:
+```bash
+$(terraform output -raw ssh_tool_vm)
+```
+
+### 3. Generating Traffic
 To generate traffic that will be picked up by the visibility fabric, run `iperf3` between the production VMs.
 
 **On Production VM 2 (Server):**
 ```bash
-ssh -i lab_key.pem peter@<prod2_public_ip>
+# Get the SSH command and connect
+$(terraform output -raw ssh_prod2)
+
+# Once connected, start iperf3 server
 iperf3 -s
 ```
 
-**On Production VM 1 (Client):**
+**On Production VM 1 (Client)** (in a separate terminal):
 ```bash
-ssh -i lab_key.pem peter@<prod1_public_ip>
-# Replace with the PRIVATE IP of prod2 (from terraform output)
+# Get the SSH command and connect
+$(terraform output -raw ssh_prod1)
+
+# Once connected, get prod2's private IP from terraform output
+terraform output prod2_private_ip
+
+# Then run iperf3 client (replace 10.0.2.x with actual private IP)
 iperf3 -c 10.0.2.x -t 300
 ```
 
-### 3. Verifying Visibility (ntopng)
+### 4. Verifying Visibility (ntopng)
 The **Tool VM** is pre-configured with `ntopng` listening on the VXLAN interface.
 
 1.  Open your web browser to `http://<tool_vm_public_ip>:3000`.
@@ -232,10 +284,10 @@ The **Tool VM** is pre-configured with `ntopng` listening on the VXLAN interface
 If you want to see the encapsulated packets directly on the Tool VM:
 
 ```bash
-# Connect to Tool VM
-ssh -i lab_key.pem peter@<tool_vm_public_ip>
+# Get the SSH command for Tool VM
+$(terraform output -raw ssh_tool_vm)
 
-# Dump traffic on the VXLAN interface
+# Once connected, dump traffic on the VXLAN interface
 sudo tcpdump -i vxlan0 -n
 ```
 
