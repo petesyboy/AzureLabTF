@@ -90,7 +90,7 @@ resource "azurerm_network_security_group" "nsg_visibility" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "5671"
-    source_address_prefix      = "VirtualNetwork"
+    source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
 
@@ -103,7 +103,7 @@ resource "azurerm_network_security_group" "nsg_visibility" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "9900"
-    source_address_prefix      = "VirtualNetwork"
+    source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
 
@@ -207,7 +207,20 @@ resource "azurerm_network_security_group" "nsg_visibility" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "9902"
-    source_address_prefix      = "VirtualNetwork"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  # UCT-V agent communication (TCP 8300)
+  security_rule {
+    name                       = "Allow-UCTV-Agent-8300"
+    priority                   = 195
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "8300"
+    source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
 }
