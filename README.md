@@ -97,7 +97,6 @@ After successful deployment, the following outputs are available:
 - `vseries_public_ip` - vSeries Node management/troubleshooting
 - `prod1_public_ip` - Production Ubuntu VM 1 SSH access
 - `prod2_public_ip` - Production Ubuntu VM 2 SSH access
-- `fm_token_value` - FM authentication token (required for UCT-V/vSeries setup)
 
 ## Use Cases & Testing
 
@@ -125,7 +124,7 @@ This lab environment supports:
 Terraform generates a Python script (`scripts/configure_lab.py`) from the template file (`scripts/configure_lab.py.tftpl`). This script is **not automatically triggered** — you must run it manually after deployment. It performs the following actions:
 
 1.  **Wait for FM**: Polls the GigaVUE-FM API until the system is ready.
-2.  **Authenticate**: Logs into GigaVUE-FM to retrieve an API authentication token.
+2.  **Authenticate**: Automatically logs into GigaVUE-FM, creates a dedicated API user ('peter'), and generates an authentication token.
 3.  **Configure Components**: Connects via SSH to the **UCT-V Controller**, **vSeries Node**, and **Production VMs**.
 4.  **Register Agents**: Updates the `/etc/gigamon-cloud.conf` file on each VM with:
     *   The FM Group and Subgroup names.
@@ -162,12 +161,7 @@ The deployment creates the infrastructure, but GigaVUE-FM requires manual initia
     *   **Uncheck** "SSH Key-Based Authentication" if prompted.
     *   **Change the Password** when prompted.
 
-2.  **Generate API Token**:
-    *   In FM, go to **User Profile** (top right icon) > **API Token**.
-    *   Click **Generate**.
-    *   **Copy** the token to your clipboard.
-
-3.  **Run Automation Script**:
+2.  **Run Automation Script**:
     From your terminal in the project root:
     ```bash
     # On macOS/Linux:
@@ -176,7 +170,6 @@ The deployment creates the infrastructure, but GigaVUE-FM requires manual initia
     # On Windows:
     python scripts/configure_lab.py
     ```
-    *   **Paste** the API token when prompted.
     *   The script will configure all agents and create the Monitoring Domain/Session automatically.
 
 ### 3. Retrieve Connection Details

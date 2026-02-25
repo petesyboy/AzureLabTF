@@ -69,29 +69,114 @@ def check_fm_accessible():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     try:
-        requests.get(url, verify=False, timeout=5, headers=headers)
+        resp = requests.get(url, verify=False, timeout=5, headers=headers)
+        if resp.status_code >= 500:
+            print(f"FM web server is up, but API backend is not ready (HTTP {resp.status_code}). Waiting...")
+            return False
         return True
     except requests.exceptions.RequestException:
-        print("FM is not yet accessible. Please ensure the VM is running and web server is up.")
+        print("FM is not yet accessible (socket error). Please ensure the VM is running.")
         return False
 
 def get_user_token():
-    """Prompts the user for the FM API Token."""
+    """Automates FM login, user creation, and token generation."""
     print("\n" + "="*60)
-    print("ACTION REQUIRED: GigaVUE-FM Authentication")
-    print("="*60)
-    print(f"1. Log in to GigaVUE-FM: {FM_URL}")
-    print("   (Default credentials: admin / admin123A!!)")
-    print("2. Accept the EULA and change the password as prompted.")
-    print("3. Navigate to: Settings > Authentication > GigaVUE-FM User Management > Tokens")
-    print("4. Create a fabric management token and copy it.")
+    print("Automating GigaVUE-FM Authentication & User Creation")
     print("="*60)
     
-    while True:
-        token = input("\nPaste your FM API Token here: ").strip()
-        if token:
-            return token
-        print("Token cannot be empty.")
+    # 1. Login as admin
+    login_url = f"{FM_URL}/api/v1.2/authen"
+    headers = {"Content-Type": "application/json"}
+    login_data = {"username": "admin", "password": "admin123A!!"}
+    
+    print("Logging into FM as admin...")
+    try:
+        resp = requests.post(login_url, json=login_data, headers=headers, verify=False, timeout=10)
+        resp.raise_for_status()
+        admin_token = resp.json().get("token")
+        if not admin_token:
+            print("Failed to get token from login response.")
+            sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            print("Initial login failed (401). The default password might have already been changed.")
+            print("Please ensure the FM instance is fresh or modify the script with the current password.")
+            sys.exit(1)
+        print(f"Login failed (HTTP {e.response.status_code}): {e.response.text}")
+        sys.exit(1)
+    except ValueError:
+        print(f"API returned non-JSON response. It might still be booting up. Response:\n{resp.text}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Connection error: {e}")
+        sys.exit(1)
+
+    # 2. Accept EULA (sometimes required on fresh boot before APIs work)
+    auth_headers = {
+        "Authorization": f"Bearer {admin_token}",
+        "Content-Type": "application/json"
+    }
+    
+    eula_url = f"{FM_URL}/api/v1.3/auth/users/eula"
+    print("Accepting EULA...")
+    requests.post(eula_url, headers=auth_headers, verify=False)
+
+    # 3. Create 'peter' user (if it doesn't exist)
+    user_url = f"{FM_URL}/api/v1.3/auth/users"
+    peter_data = {
+        "userName": "peter",
+        "firstName": "Peter",
+        "lastName": "Admin",
+        "password": "Gigamon123A!!!",
+        "confirmPassword": "Gigamon123A!!!",
+        "email": "pete.connolly@gigamon.com",
+        "roles": [{"name": "admin_role"}],
+        "isActive": True
+    }
+    
+    print("Creating user 'peter'...")
+    try:
+        resp = requests.post(user_url, json=peter_data, headers=auth_headers, verify=False)
+        if resp.status_code in [200, 201]:
+            print("User 'peter' created successfully.")
+        elif resp.status_code == 409:
+            print("User 'peter' already exists. Reusing existing user.")
+        else:
+            print(f"Failed to create user. Status: {resp.status_code}")
+            print(resp.text)
+    except Exception as e:
+        print(f"Error creating user: {e}")
+
+    # 4. Login as 'peter' to get a token for them
+    print("Logging in as 'peter' to generate token...")
+    peter_login_data = {"username": "peter", "password": "Gigamon123A!!!"}
+    try:
+        resp = requests.post(login_url, json=peter_login_data, headers=headers, verify=False)
+        resp.raise_for_status()
+        peter_token = resp.json().get("token")
+        
+        # 5. Create a long-lived API token for peter
+        token_url = f"{FM_URL}/api/v1.3/auth/tokens"
+        token_auth_headers = {"Authorization": f"Bearer {peter_token}", "Content-Type": "application/json"}
+        token_data = {"name": "Lab_Registration_Token", "description": "Token for agent registration", "duration": 86400}
+        
+        print("Generating API token for 'peter'...")
+        t_resp = requests.post(token_url, json=token_data, headers=token_auth_headers, verify=False)
+        if t_resp.status_code in [200, 201]:
+            final_token = t_resp.json().get("token")
+            if final_token:
+                print("API Token generated successfully!")
+                return final_token
+                
+        # Fallback to the session token if permanent token creation fails
+        print("Using session token as fallback.")
+        return peter_token
+        
+    except Exception as e:
+        print(f"Failed to generate token for peter: {e}")
+        # If peter login fails, pass the admin token so the script at least works
+        print("Falling back to admin token.")
+        return admin_token
 
 def create_monitoring_domain(token, domain_alias):
     """Creates the Monitoring Domain via FM API using 'anyCloud' platform."""

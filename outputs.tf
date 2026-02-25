@@ -64,22 +64,14 @@ output "tool_vm_public_ip" {
   value       = module.tool_vm.public_ip
 }
 
-# FM Token Output
-output "fm_token_value" {
-  description = "FM token string. Copy to /etc/gigamon-cloud.conf on UCT-V and UCT-V agents for authentication."
-  value       = random_string.fm_token.result
-  sensitive   = true # This prevents the value from being shown in cleartext in CLI output
-}
-
 # UCT-V Registration Details
 output "uctv_registration_info" {
   description = "UCT-V Controller registration information and configuration."
   value = {
     fm_endpoint  = "https://${module.fm.public_ip}"
-    fm_token     = "Use 'terraform output fm_token_value' to retrieve"
     uctv_private = module.uctv.private_ip
     config_file  = "/etc/gigamon-cloud.conf"
-    instructions = "UCT-V and agents automatically configured in cloud-init. Copy FM token if manual setup needed."
+    instructions = "UCT-V and agents automatically configured in cloud-init and via configure_lab.py."
   }
 }
 
@@ -93,7 +85,7 @@ output "deployment_summary" {
     ssh_key      = "Provide your SSH key for authentication"
     next_steps = [
       "1. Access FM web interface using fm_public_ip",
-      "2. UCT-V Controller auto-registers to FM using FM token",
+      "2. Run 'python scripts/configure_lab.py' to register environment & UCT-V Controller",
       "3. Prod VMs deploy UCT-V agent and auto-register to UCT-V Controller",
       "4. SSH into prod VMs to generate traffic with iperf3",
       "5. Monitor traffic visibility through GigaVUE-FM dashboard"
