@@ -124,15 +124,10 @@ This lab environment supports:
 Terraform generates a Python script (`scripts/configure_lab.py`) from the template file (`scripts/configure_lab.py.tftpl`). This script is **not automatically triggered** — you must run it manually after deployment. It performs the following actions:
 
 1.  **Wait for FM**: Polls the GigaVUE-FM API until the system is ready.
-2.  **Authenticate**: Automatically logs into GigaVUE-FM, creates a dedicated API user ('peter'), and generates an authentication token.
-3.  **Configure Components**: Connects via SSH to the **UCT-V Controller**, **vSeries Node**, and **Production VMs**.
-4.  **Register Agents**: Updates the `/etc/gigamon-cloud.conf` file on each VM with:
-    *   The FM Group and Subgroup names.
-    *   The Authentication Token.
-    *   The FM IP address.
-5.  **Install UCT-V Agent**: The agent is automatically downloaded from a public Azure Blob Storage URL (`https://connollystorageaccount.blob.core.windows.net/uctv-agents/...`) and installed via cloud-init.
-6.  **Restart Services**: Restarts the `uctv-agent` service to initiate registration with the fabric.
-7.  **Verify Connectivity**: Pings all nodes to ensure the management network is functional.
+2.  **Authenticate**: Uses a pre-generated FM API token (JWT) that you create once via the FM web UI. The token is used for both REST API calls and agent registration.
+3.  **Create Monitoring Domain**: Creates the `anyCloud` Monitoring Domain and Connection in FM via REST API.
+4.  **Configure Agents (Token Push)**: Connects via SSH to the **UCT-V Controller**, **vSeries Node**, and **Production VMs** and updates the registration token in `/etc/gigamon-cloud.conf`.
+5.  **Agent Auto-Refresh**: Each VM includes a small systemd path unit (installed via cloud-init) that watches `/etc/gigamon-cloud.conf` and restarts the appropriate Gigamon service automatically when the file changes. The script also triggers the oneshot refresh to make registration immediate.
 
 ## Deployment Instructions
 
@@ -152,8 +147,9 @@ terraform apply tfplan
 
 ### 2. Post-Deployment Configuration (CRITICAL)
 
-The deployment creates the infrastructure, but GigaVUE-FM requires manual initialization and token generation.
+The deployment creates the infrastructure, but GigaVUE-FM requires manual initialization before the automation script can run.
 
+#### 2a. First-time FM Setup
 1.  **Access GigaVUE-FM**:
     *   Once `terraform apply` finishes, get the FM IP: `terraform output fm_public_ip`
     *   Open `https://<fm_public_ip>` in your browser.
@@ -161,16 +157,32 @@ The deployment creates the infrastructure, but GigaVUE-FM requires manual initia
     *   **Uncheck** "SSH Key-Based Authentication" if prompted.
     *   **Change the Password** when prompted.
 
-2.  **Run Automation Script**:
-    From your terminal in the project root:
-    ```bash
-    # On macOS/Linux:
-    python3 scripts/configure_lab.py
-    
-    # On Windows:
-    python scripts/configure_lab.py
-    ```
-    *   The script will configure all agents and create the Monitoring Domain/Session automatically.
+#### 2b. Generate an FM API Token
+The automation script uses a long-lived FM API token for both REST API calls and agent registration. You only need to do this once per deployment.
+
+1.  Log into FM as `admin`
+2.  Go to **Administration → User Management → Tokens → Current User Tokens**
+3.  Click **New Token** and fill in:
+    *   **Name**: `Lab_Token` (or any name)
+    *   **Expiry**: `105` days (maximum)
+    *   **User Group**: `Super Admin Group`
+4.  Click **OK** — the token is shown **once only**. Copy it immediately.
+
+#### 2c. Run the Automation Script
+From your terminal in the project root:
+```bash
+# Activate the virtual environment first
+.\scripts\.venv\Scripts\activate  # Windows
+source scripts/.venv/bin/activate  # macOS/Linux
+
+# Run the script
+python scripts/configure_lab.py
+```
+The script will:
+- Wait for FM to be ready (polls until API responds)
+- Prompt you to paste your FM API token (if not hardcoded in the script)
+- Create the Monitoring Domain and Connection in FM
+- Push the FM token into the agent config on all VMs (agent services auto-refresh on config change)
 
 ### 3. Retrieve Connection Details
 Once configured, you can access the environment using the generated key `lab_key.pem`:

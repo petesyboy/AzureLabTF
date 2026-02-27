@@ -33,8 +33,59 @@ locals {
             remoteAddress: ${module.fm.public_ip}
             remotePort: 443
 
+      - path: /usr/local/sbin/gigamon-agent-refresh.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CONF="/etc/gigamon-cloud.conf"
+          SERVICE="uctv-cntlr"
+
+          if [[ ! -f "$CONF" ]]; then
+            exit 0
+          fi
+
+          if grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+            echo "gigamon-cloud.conf still has placeholder token; skipping restart."
+            exit 0
+          fi
+
+          systemctl restart "$SERVICE"
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.service
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Refresh Gigamon agent after config change
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/gigamon-agent-refresh.sh
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.path
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Watch /etc/gigamon-cloud.conf for changes
+
+          [Path]
+          PathChanged=/etc/gigamon-cloud.conf
+          Unit=gigamon-agent-refresh.service
+
+          [Install]
+          WantedBy=multi-user.target
+
     runcmd:
       - echo "UCT-V Controller initialized. Waiting for configuration..."
+      - systemctl daemon-reload
+      - systemctl enable --now gigamon-agent-refresh.path || true
+      - systemctl start gigamon-agent-refresh.service || true
   EOF
 
   # vSeries Cloud-Init
@@ -52,8 +103,59 @@ locals {
             remoteAddress: ${module.fm.public_ip}
             remotePort: 443
 
+      - path: /usr/local/sbin/gigamon-agent-refresh.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CONF="/etc/gigamon-cloud.conf"
+          SERVICE="vseries-node"
+
+          if [[ ! -f "$CONF" ]]; then
+            exit 0
+          fi
+
+          if grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+            echo "gigamon-cloud.conf still has placeholder token; skipping restart."
+            exit 0
+          fi
+
+          systemctl restart "$SERVICE"
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.service
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Refresh Gigamon agent after config change
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/gigamon-agent-refresh.sh
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.path
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Watch /etc/gigamon-cloud.conf for changes
+
+          [Path]
+          PathChanged=/etc/gigamon-cloud.conf
+          Unit=gigamon-agent-refresh.service
+
+          [Install]
+          WantedBy=multi-user.target
+
     runcmd:
       - echo "vSeries Node initialized. Waiting for configuration..."
+      - systemctl daemon-reload
+      - systemctl enable --now gigamon-agent-refresh.path || true
+      - systemctl start gigamon-agent-refresh.service || true
   EOF
 
   # Tool VM: ntopng + VXLAN termination
@@ -155,6 +257,54 @@ locals {
             remoteAddress: ${module.uctv.private_ip}
             remotePort: 8892
 
+      - path: /usr/local/sbin/gigamon-agent-refresh.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CONF="/etc/gigamon-cloud.conf"
+          SERVICE="uctv"
+
+          if [[ ! -f "$CONF" ]]; then
+            exit 0
+          fi
+
+          if grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+            echo "gigamon-cloud.conf still has placeholder token; skipping restart."
+            exit 0
+          fi
+
+          systemctl restart "$SERVICE"
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.service
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Refresh Gigamon agent after config change
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/gigamon-agent-refresh.sh
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.path
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Watch /etc/gigamon-cloud.conf for changes
+
+          [Path]
+          PathChanged=/etc/gigamon-cloud.conf
+          Unit=gigamon-agent-refresh.service
+
+          [Install]
+          WantedBy=multi-user.target
+
     ssh_authorized_keys:
       - ${tls_private_key.lab_key.public_key_openssh}
 
@@ -164,6 +314,9 @@ locals {
       - echo "Installing UCT-V agent..."
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
+      - systemctl daemon-reload
+      - systemctl enable --now gigamon-agent-refresh.path || true
+      - systemctl start gigamon-agent-refresh.service || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi
   EOF
 
@@ -189,6 +342,54 @@ locals {
             remoteAddress: ${module.uctv.private_ip}
             remotePort: 8892
 
+      - path: /usr/local/sbin/gigamon-agent-refresh.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CONF="/etc/gigamon-cloud.conf"
+          SERVICE="uctv"
+
+          if [[ ! -f "$CONF" ]]; then
+            exit 0
+          fi
+
+          if grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+            echo "gigamon-cloud.conf still has placeholder token; skipping restart."
+            exit 0
+          fi
+
+          systemctl restart "$SERVICE"
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.service
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Refresh Gigamon agent after config change
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/gigamon-agent-refresh.sh
+
+      - path: /etc/systemd/system/gigamon-agent-refresh.path
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Watch /etc/gigamon-cloud.conf for changes
+
+          [Path]
+          PathChanged=/etc/gigamon-cloud.conf
+          Unit=gigamon-agent-refresh.service
+
+          [Install]
+          WantedBy=multi-user.target
+
     ssh_authorized_keys:
       - ${tls_private_key.lab_key.public_key_openssh}
 
@@ -198,6 +399,9 @@ locals {
       - echo "Installing UCT-V agent..."
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
+      - systemctl daemon-reload
+      - systemctl enable --now gigamon-agent-refresh.path || true
+      - systemctl start gigamon-agent-refresh.service || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi
   EOF
 }

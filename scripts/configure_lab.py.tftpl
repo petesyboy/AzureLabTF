@@ -1,11 +1,9 @@
-import argparse
 import requests
 import time
 import json
 import sys
 import subprocess
 import urllib3
-import getpass
 import os
 
 # Suppress insecure request warnings
@@ -32,6 +30,14 @@ FM_SUBGROUP = "${fm_subgroup}"
 SUBSCRIPTION_ID = "${subscription_id}"
 TENANT_ID = "${tenant_id}"
 
+# FM API Token — leave empty to be prompted at runtime.
+# Generate from FM UI: Administration > User Management > Tokens > Current User Tokens
+# Token is used for both FM REST API calls and agent registration in gigamon-cloud.conf
+FM_TOKEN = ""
+
+# Built at runtime after token is obtained
+AUTH_HEADERS = {}
+
 def run_ssh_command(ip, command, use_sudo=False):
     """Runs a command on a remote VM via SSH."""
     ssh_cmd = [
@@ -48,7 +54,7 @@ def run_ssh_command(ip, command, use_sudo=False):
         
     ssh_cmd.append(command)
     
-    print(f"DEBUG: Running SSH: {' '.join(ssh_cmd)}")
+    print(f"  [SSH] {USERNAME}@{ip}: {command[:80]}{'...' if len(command) > 80 else ''}")  
 
     try:
         # We need to capture output but -tt might mess with it slightly.
@@ -62,139 +68,96 @@ def run_ssh_command(ip, command, use_sudo=False):
         return None
 
 def check_fm_accessible():
-    """Checks if FM is reachable."""
-    url = f"{FM_URL}/api/v1.2/authen" # Only checking reachability, not auth
-    print(f"Checking connectivity to FM at {FM_IP}...")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    try:
-        resp = requests.get(url, verify=False, timeout=5, headers=headers)
-        if resp.status_code >= 500:
-            print(f"FM web server is up, but API backend is not ready (HTTP {resp.status_code}). Waiting...")
-            return False
-        return True
-    except requests.exceptions.RequestException:
-        print("FM is not yet accessible (socket error). Please ensure the VM is running.")
+    """Checks if FM API is reachable and ready."""
+    url = f"{FM_URL}/api/v1.3/user" 
+    print(f"Waiting for FM API to become ready (this can take 5-10 minutes after boot)...")
+    print(f"Checking URL: {url} for a valid JSON API response")
+    
+    max_retries = 60
+    for i in range(max_retries):
+        try:
+            # Send a request with dummy auth. If the API is up, it will return a 401/403 with JSON.
+            # If the web server is up but API isn't, it often returns 502, 503, or an HTML redirect.
+            resp = requests.get(url, verify=False, timeout=5, auth=("dummy", "dummy"))
+            
+            # If the response contains JSON, it means the backend API has initialized
+            if "application/json" in resp.headers.get("Content-Type", ""):
+                print("\nFM API is ready!")
+                return True
+            else:
+                sys.stdout.write(".")
+                sys.stdout.flush()
+        except requests.exceptions.RequestException:
+            sys.stdout.write("_")
+            sys.stdout.flush()
+        
+        time.sleep(10)
+        
+    print("\nTimeout waiting for FM API. Please check the VM status.")
+    return False
+
+def get_auth_token():
+    """Returns the FM API JWT token for use in API calls and agent registration."""
+    print("\n" + "="*60)
+    print("GigaVUE-FM Authentication")
+    print("="*60)
+
+    token = FM_TOKEN.strip()
+
+    if not token:
+        print("""
+Before continuing, you need an FM API token.
+
+To create one:
+  1. Open https://{}  in your browser and log in as admin
+  2. Go to: Administration > User Management > Tokens > Current User Tokens
+  3. Click 'New Token'
+  4. Set: Name = Lab_Token, Expiry = 105 days, User Group = Super Admin Group
+  5. Click OK and COPY the full token string shown (it is only displayed once)
+  6. Paste it below
+""".format(FM_IP))
+        token = input("Paste FM API token here: ").strip()
+        if not token:
+            print("No token provided. Exiting.")
+            sys.exit(1)
+
+    print(f"  Token: {token[:20]}...{token[-10:]} ({len(token)} chars)")
+    return token
+
+def _ssh_sed_set(vm_ip, key, value, config_path="/etc/gigamon-cloud.conf"):
+    escaped_value = str(value).replace("|", "\\|")
+    cmd = f"sed -i \"s|^\\\\([[:space:]]*{key}:\\\\).*|\\\\1 {escaped_value}|\" {config_path}"
+    return run_ssh_command(vm_ip, cmd, use_sudo=True)
+
+def push_registration_token(vm_ip, token, remote_address=None, remote_port=None):
+    """Push token (and optionally remoteAddress/remotePort) and trigger agent refresh on the VM."""
+    print(f"Pushing registration settings to {vm_ip}...")
+
+    # Ensure config exists (cloud-init should have created it)
+    if run_ssh_command(vm_ip, "test -f /etc/gigamon-cloud.conf && echo FOUND || echo NOT_FOUND") != "FOUND":
+        print(f"  [!] /etc/gigamon-cloud.conf not found on {vm_ip}. Skipping.")
         return False
 
-def get_user_token():
-    """Automates FM login, user creation, and token generation."""
-    print("\n" + "="*60)
-    print("Automating GigaVUE-FM Authentication & User Creation")
-    print("="*60)
-    
-    # 1. Login as admin
-    login_url = f"{FM_URL}/api/v1.2/authen"
-    headers = {"Content-Type": "application/json"}
-    login_data = {"username": "admin", "password": "admin123A!!"}
-    
-    print("Logging into FM as admin...")
-    try:
-        resp = requests.post(login_url, json=login_data, headers=headers, verify=False, timeout=10)
-        resp.raise_for_status()
-        admin_token = resp.json().get("token")
-        if not admin_token:
-            print("Failed to get token from login response.")
-            sys.exit(1)
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            print("Initial login failed (401). The default password might have already been changed.")
-            print("Please ensure the FM instance is fresh or modify the script with the current password.")
-            sys.exit(1)
-        print(f"Login failed (HTTP {e.response.status_code}): {e.response.text}")
-        sys.exit(1)
-    except ValueError:
-        print(f"API returned non-JSON response. It might still be booting up. Response:\n{resp.text}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Connection error: {e}")
-        sys.exit(1)
+    _ssh_sed_set(vm_ip, "token", token)
 
-    # 2. Accept EULA (sometimes required on fresh boot before APIs work)
-    auth_headers = {
-        "Authorization": f"Bearer {admin_token}",
-        "Content-Type": "application/json"
-    }
-    
-    eula_url = f"{FM_URL}/api/v1.3/auth/users/eula"
-    print("Accepting EULA...")
-    requests.post(eula_url, headers=auth_headers, verify=False)
+    if remote_address is not None:
+        _ssh_sed_set(vm_ip, "remoteAddress", remote_address)
+    if remote_port is not None:
+        _ssh_sed_set(vm_ip, "remotePort", remote_port)
 
-    # 3. Create 'peter' user (if it doesn't exist)
-    user_url = f"{FM_URL}/api/v1.3/auth/users"
-    peter_data = {
-        "userName": "peter",
-        "firstName": "Peter",
-        "lastName": "Admin",
-        "password": "Gigamon123A!!!",
-        "confirmPassword": "Gigamon123A!!!",
-        "email": "pete.connolly@gigamon.com",
-        "roles": [{"name": "admin_role"}],
-        "isActive": True
-    }
-    
-    print("Creating user 'peter'...")
-    try:
-        resp = requests.post(user_url, json=peter_data, headers=auth_headers, verify=False)
-        if resp.status_code in [200, 201]:
-            print("User 'peter' created successfully.")
-        elif resp.status_code == 409:
-            print("User 'peter' already exists. Reusing existing user.")
-        else:
-            print(f"Failed to create user. Status: {resp.status_code}")
-            print(resp.text)
-    except Exception as e:
-        print(f"Error creating user: {e}")
+    # The VM-side systemd path unit will also react to the file change,
+    # but starting the oneshot makes this immediate/idempotent.
+    run_ssh_command(vm_ip, "systemctl start gigamon-agent-refresh.service || true", use_sudo=True)
+    return True
 
-    # 4. Login as 'peter' to get a token for them
-    print("Logging in as 'peter' to generate token...")
-    peter_login_data = {"username": "peter", "password": "Gigamon123A!!!"}
-    try:
-        resp = requests.post(login_url, json=peter_login_data, headers=headers, verify=False)
-        resp.raise_for_status()
-        peter_token = resp.json().get("token")
-        
-        # 5. Create a long-lived API token for peter
-        token_url = f"{FM_URL}/api/v1.3/auth/tokens"
-        token_auth_headers = {"Authorization": f"Bearer {peter_token}", "Content-Type": "application/json"}
-        token_data = {"name": "Lab_Registration_Token", "description": "Token for agent registration", "duration": 86400}
-        
-        print("Generating API token for 'peter'...")
-        t_resp = requests.post(token_url, json=token_data, headers=token_auth_headers, verify=False)
-        if t_resp.status_code in [200, 201]:
-            final_token = t_resp.json().get("token")
-            if final_token:
-                print("API Token generated successfully!")
-                return final_token
-                
-        # Fallback to the session token if permanent token creation fails
-        print("Using session token as fallback.")
-        return peter_token
-        
-    except Exception as e:
-        print(f"Failed to generate token for peter: {e}")
-        # If peter login fails, pass the admin token so the script at least works
-        print("Falling back to admin token.")
-        return admin_token
-
-def create_monitoring_domain(token, domain_alias):
+def create_monitoring_domain(domain_alias):
     """Creates the Monitoring Domain via FM API using 'anyCloud' platform."""
-    
-    # User specified v1.3
-    # If FM is older, v1.2 might work with same payload, but let's try v1.3 first as requested.
     url = f"{FM_URL}/api/v1.3/cloud/monitoringDomains"
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Content-Type": "application/json"
-    }
 
     # 1. Check existence
     print(f"Checking for existing domain at: {url}")
     try:
-        resp = requests.get(url, headers=headers, verify=False)
+        resp = requests.get(url, headers=AUTH_HEADERS, verify=False)
         print(f"GET Response Code: {resp.status_code}")
         
         if resp.status_code == 200:
@@ -238,7 +201,7 @@ def create_monitoring_domain(token, domain_alias):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, verify=False)
+        response = requests.post(url, json=payload, headers=AUTH_HEADERS, verify=False)
         
         # Debugging POST response
         print(f"POST Response Code: {response.status_code}")
@@ -260,7 +223,7 @@ def create_monitoring_domain(token, domain_alias):
             # Wait a moment for consistency?
             time.sleep(2) 
             try:
-                resp = requests.get(url, headers=headers, verify=False)
+                resp = requests.get(url, headers=AUTH_HEADERS, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, dict) and 'monitoringDomains' in data:
@@ -292,7 +255,7 @@ def create_monitoring_domain(token, domain_alias):
             print("Attempting to retrieve ID from existing domains again...")
             # Retry GET to find ID with robust parsing
             try:
-                resp = requests.get(url, headers=headers, verify=False)
+                resp = requests.get(url, headers=AUTH_HEADERS, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, dict) and 'monitoringDomains' in data:
@@ -324,34 +287,24 @@ def create_monitoring_domain(token, domain_alias):
         print(f"Error creating domain: {e}")
         return None
 
-def create_anycloud_connection(token, domain_id, connection_alias):
+def create_anycloud_connection(domain_id, connection_alias):
     """Creates the AnyCloud Connection (Session) via FM API."""
     if not domain_id:
         print("Skipping Connection/Session creation (No Domain ID).")
         return
 
-    # User specified endpoint for AnyCloud connection
     url = f"{FM_URL}/api/v1.3/cloud/anyCloud/connections"
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Content-Type": "application/json"
-    }
-    
+
     print(f"\nCreating AnyCloud Connection '{connection_alias}'...")
-    
-    # User provided payload
+
     payload = {
         "alias": connection_alias,
         "monitoringDomainId": domain_id,
         "secureMirrorTraffic": False
     }
-    
+
     try:
-        # Check existence first? The endpoint might be listable
-        # But let's try creating directly and handle 409 if needed, matching established pattern
-        response = requests.post(url, json=payload, headers=headers, verify=False)
+        response = requests.post(url, json=payload, headers=AUTH_HEADERS, verify=False)
         print(f"POST Response Code: {response.status_code}")
         
         if response.status_code in [200, 201]:
@@ -366,113 +319,77 @@ def create_anycloud_connection(token, domain_id, connection_alias):
         print(f"Error creating connection: {e}")
 
 
-def update_vm_config(vm_ip, token, service_name="gigamon-gigavue-uctv", remote_address=None, remote_port=443):
-    """Updates the Gigamon agent configuration on a VM."""
-    if remote_address is None:
-        remote_address = FM_IP  # Default: register with FM
-    print(f"Configuring agent on {vm_ip} (Service: {service_name}, RemoteAddress: {remote_address}, RemotePort: {remote_port})...")
-    
-    # Check if config file exists
-    check_file_cmd = "test -f /etc/gigamon-cloud.conf && echo 'FOUND' || echo 'NOT_FOUND'"
-    file_status = run_ssh_command(vm_ip, check_file_cmd)
-    
-    if file_status != 'FOUND':
-        print(f"Config file not found on {vm_ip}. Creating it...")
-        lines = [
-            "Registration:",
-            f"  groupName: {FM_GROUP}",
-            f"  subGroupName: {FM_SUBGROUP}",
-            f"  token: {token}",
-            f"  remoteAddress: {remote_address}",
-            f"  remotePort: {remote_port}"
-        ]
-        cmd_str = "\\n".join(lines)
-        create_cmd = f"printf '{cmd_str}' | sudo tee /etc/gigamon-cloud.conf"
-        
-        if run_ssh_command(vm_ip, create_cmd) is None:
-             print(f"Failed to create config file on {vm_ip}.")
-             return
-    else:
-        # Update existing file
-        print(f"Updating existing config on {vm_ip}...")
-        
-        # 1. Remove comments (lines starting with # or spaces then #)
-        run_ssh_command(vm_ip, "sudo sed -i '/^\\s*#/d' /etc/gigamon-cloud.conf")
-        
-        # 2. Rename remoteIP -> remoteAddress (backwards compat)
-        run_ssh_command(vm_ip, "sudo sed -i 's/remoteIP/remoteAddress/g' /etc/gigamon-cloud.conf")
-        
-        # 3. Set the correct remoteAddress value
-        run_ssh_command(vm_ip, f"sudo sed -i 's|remoteAddress:.*|remoteAddress: {remote_address}|g' /etc/gigamon-cloud.conf")
-        
-        # 4. Set the correct remotePort value
-        run_ssh_command(vm_ip, f"sudo sed -i 's|remotePort:.*|remotePort: {remote_port}|g' /etc/gigamon-cloud.conf")
-        
-        # 5. Update Token (handle both PLACEHOLDER and PRICEHOLDER just in case)
-        sed_cmd = f"sed -i 's/PLACEHOLDER_TOKEN/{token}/g' /etc/gigamon-cloud.conf"
-        sed_cmd2 = f"sed -i 's/PRICEHOLDER_TOKEN/{token}/g' /etc/gigamon-cloud.conf"
-        
-        run_ssh_command(vm_ip, sed_cmd, use_sudo=True)
-        run_ssh_command(vm_ip, sed_cmd2, use_sudo=True)
-
-    # Show the final config for verification
-    print(f"Final config on {vm_ip}:")
-    run_ssh_command(vm_ip, "cat /etc/gigamon-cloud.conf")
-
-    # Restart service
-    restart_cmd = f"systemctl restart {service_name}" 
-    run_ssh_command(vm_ip, restart_cmd, use_sudo=True)
-    print(f"Agent configured and restarted on {vm_ip}.")
-
 def main():
     print("---------------------------------------------------------")
     print("   Gigamon V Series - Post-Deployment Configuration")
     print("---------------------------------------------------------")
-    
+
     if not check_fm_accessible():
         print("FM is not reachable. Is the VM running?")
         sys.exit(1)
-        
-    # 1. Get Token from User
-    token = get_user_token()
-    
-    # Define variables as requested
+
+    # 1. Get FM API token (prompts if not hardcoded)
+    agent_token = get_auth_token()
+
+    # Build auth headers from the token
+    global AUTH_HEADERS
+    AUTH_HEADERS = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {agent_token}"
+    }
+
     monitoring_domain = FM_GROUP
     subgroup_name = FM_SUBGROUP
-    
-    # 2. FM API Configuration (Monitoring Domain) - FIRST!
-    print("\n--- Creating Monitoring Domain (API) ---")
-    print(f"Monitoring Domain: {monitoring_domain}")
-    # print(f"Subgroup Name: {subgroup_name}") # Not used for AnyCloud domain creation
-    
-    # Create Domain (anyCloud type, no connection ID needed)
-    domain_id = create_monitoring_domain(token, monitoring_domain)
-    
+
+    os.system('cls' if os.name == 'nt' else 'clear')
+    print("\n" + "="*60)
+    print("Configuration Summary")
+    print("="*60)
+    print(f"  FM:               {FM_URL}")
+    print(f"  Monitoring Domain: {monitoring_domain}")
+    print(f"  Connection:        {subgroup_name}")
+    print(f"  UCT-V Controller:  {UCTV_PUBLIC_IP} (private: {UCTV_IP})")
+    print(f"  vSeries:           {VSERIES_PUBLIC_IP}")
+    print(f"  Prod VMs:          {', '.join(PROD_IPS)}")
+    print()
+
+    # 2. FM API Configuration (Monitoring Domain)
+    print("--- Step 1/2: FM API Configuration ---")
+    print(f"Creating Monitoring Domain '{monitoring_domain}'...")
+
+    domain_id = create_monitoring_domain(monitoring_domain)
+
     if domain_id:
-        create_anycloud_connection(token, domain_id, subgroup_name)
+        create_anycloud_connection(domain_id, subgroup_name)
     else:
         print("\n[WARNING] Monitoring Domain creation failed or skipped.")
         print("Agents *may* fail to register if the domain does not exist in FM.")
         input("Press Enter to continue with Agent Configuration (or Ctrl+C to abort)...")
-    
-    # 3. Configure Agents (SSH) - SECOND!
-    print("\n--- Configuring Agents (SSH) ---")
-    
-    # UCT-V Controller (Service Name: uctv-cntlr) — registers to FM on port 443
-    update_vm_config(UCTV_PUBLIC_IP, token, service_name="uctv-cntlr", remote_port=443)
 
-    # vSeries (Service Name: vseries-node) — registers to FM on port 443
-    update_vm_config(VSERIES_PUBLIC_IP, token, service_name="vseries-node", remote_port=443)
+    # 3. Configure Agents (SSH)
+    print("\n--- Step 2/2: Agent Configuration (SSH) ---")
 
-    # Prod VMs register with UCT-V Controller (not FM directly) on port 8892
+    print(f"\n[1/3] Configuring UCT-V Controller ({UCTV_PUBLIC_IP})...")
+    push_registration_token(UCTV_PUBLIC_IP, agent_token, remote_address=FM_IP, remote_port=443)
+
+    print(f"\n[2/3] Configuring vSeries Node ({VSERIES_PUBLIC_IP})...")
+    push_registration_token(VSERIES_PUBLIC_IP, agent_token, remote_address=FM_IP, remote_port=443)
+
+    print(f"\n[3/3] Configuring Production VMs...")
     for ip in PROD_IPS:
         if ip:
-            update_vm_config(ip, token, service_name="uctv", remote_address=UCTV_IP, remote_port=8892)
+            print(f"  -> {ip}")
+            push_registration_token(ip, agent_token, remote_address=UCTV_IP, remote_port=8892)
 
-    print("\n---------------------------------------------------------")
+    print("\n" + "="*60)
     print("Configuration Complete!")
-    print(f"Please verify the Monitoring Domain '{monitoring_domain}' in FM.")
-    print("---------------------------------------------------------")
+    print("="*60)
+    print(f"  Verify in FM:  {FM_URL}/app/#/cloud/monitoringDomains")
+    print(f"  Domain:        {monitoring_domain}")
+    print(f"  Connection:    {subgroup_name}")
+    print("\nCheck FM Inventory for registered UCT-V Controllers and vSeries nodes.")
+    print("="*60)
 
 if __name__ == "__main__":
     main()
