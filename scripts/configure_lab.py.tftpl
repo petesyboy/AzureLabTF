@@ -2,9 +2,10 @@ import requests
 import time
 import json
 import sys
-import subprocess
 import urllib3
 import os
+import subprocess
+import shutil
 
 # Suppress insecure request warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -14,21 +15,19 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==============================================================================
 FM_IP = "${fm_ip}"
 FM_URL = f"https://{FM_IP}"
-UCTV_IP = "${uctv_ip}"
-UCTV_PUBLIC_IP = "${uctv_public_ip}"
-VSERIES_PUBLIC_IP = "${vseries_public_ip}"
-TOOL_PUBLIC_IP = "${tool_public_ip}"
-PROD_IPS = "${prod_ips}".split(",")
-KEY_PATH = "${key_path}"
-USERNAME = "${username}"
 
 # FM Configuration Defaults
 FM_GROUP = "${fm_group}"
 FM_SUBGROUP = "${fm_subgroup}"
+VSERIES_IP = "${vseries_ip}"
+UCTV_CONTROLLER_IP = "${uctv_controller_ip}"
+PROD1_IP = "${prod1_ip}"
+PROD2_IP = "${prod2_ip}"
 
-# Azure Context (for Monitoring Domain)
-SUBSCRIPTION_ID = "${subscription_id}"
-TENANT_ID = "${tenant_id}"
+# Azure Key Vault (optional convenience for local script)
+# If you uploaded the FM token to Key Vault, this script can read it using Azure CLI.
+KEY_VAULT_NAME = "${key_vault_name}"
+FM_TOKEN_SECRET_NAME = "${fm_token_secret_name}"
 
 # FM API Token — leave empty to be prompted at runtime.
 # Generate from FM UI: Administration > User Management > Tokens > Current User Tokens
@@ -37,35 +36,6 @@ FM_TOKEN = ""
 
 # Built at runtime after token is obtained
 AUTH_HEADERS = {}
-
-def run_ssh_command(ip, command, use_sudo=False):
-    """Runs a command on a remote VM via SSH."""
-    ssh_cmd = [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-tt", # Force pseudo-tty allocation
-        "-i", KEY_PATH,
-        f"{USERNAME}@{ip}",
-    ]
-    
-    if use_sudo:
-        command = f"sudo {command}"
-        
-    ssh_cmd.append(command)
-    
-    print(f"  [SSH] {USERNAME}@{ip}: {command[:80]}{'...' if len(command) > 80 else ''}")  
-
-    try:
-        # We need to capture output but -tt might mess with it slightly.
-        # However, it's necessary for sudo.
-        result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        print(f"Error running SSH command on {ip} (Exit Code {e.returncode}):")
-        print(f"  STDOUT: {e.stdout}")
-        print(f"  STDERR: {e.stderr}")
-        return None
 
 def check_fm_accessible():
     """Checks if FM API is reachable and ready."""
@@ -103,52 +73,74 @@ def get_auth_token():
     print("="*60)
 
     token = FM_TOKEN.strip()
+    token_source = "FM_TOKEN constant"
+
+    # 1) Allow env var override (useful for automation)
+    if not token:
+        env_token = (os.environ.get("GIGAMON_FM_TOKEN") or "").strip()
+        if env_token:
+            token = env_token
+            token_source = "env:GIGAMON_FM_TOKEN"
+        else:
+            env_token = (os.environ.get("FM_TOKEN") or "").strip()
+            if env_token:
+                token = env_token
+                token_source = "env:FM_TOKEN"
+
+    # 2) Convenience: If user uploaded token to Key Vault, try to read it via Azure CLI.
+    # This does NOT store the token in Terraform state; it simply reads the already-uploaded secret.
+    if not token and KEY_VAULT_NAME and FM_TOKEN_SECRET_NAME:
+        print(f"  Attempting to retrieve token from Azure Key Vault '{KEY_VAULT_NAME}' (Secret: '{FM_TOKEN_SECRET_NAME}')...")
+        try:
+            az_cmd = shutil.which("az") or ("az.cmd" if os.name == "nt" else "az")
+            az = subprocess.run(
+                [
+                    az_cmd, "keyvault", "secret", "show",
+                    "--vault-name", KEY_VAULT_NAME,
+                    "--name", FM_TOKEN_SECRET_NAME,
+                    "--query", "value",
+                    "-o", "tsv",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            token = (az.stdout or "").strip()
+            if token:
+                print(f"  [SUCCESS] Retrieved token from Key Vault '{KEY_VAULT_NAME}' secret '{FM_TOKEN_SECRET_NAME}'.")
+                token_source = f"azure-key-vault:{KEY_VAULT_NAME}/{FM_TOKEN_SECRET_NAME}"
+            else:
+                print(f"  [WARNING] Azure CLI executed successfully, but returned an empty token. Check if the secret exists and has a value.")
+        except FileNotFoundError:
+            print("  [ERROR] Azure CLI not found on PATH. Install Azure CLI or use env:GIGAMON_FM_TOKEN.")
+        except subprocess.CalledProcessError as e:
+            print(f"  [ERROR] Unable to read token from Azure Key Vault '{KEY_VAULT_NAME}'. Check your 'az login' status, permissions, and secret name.")
+            if e.stderr:
+                print(f"  Azure CLI stderr: {e.stderr.strip()}")
+            if e.stdout:
+                print(f"  Azure CLI stdout: {e.stdout.strip()}")
+        except Exception as e:
+            # Fall through to failure message
+            print(f"  [ERROR] Unhandled exception reading token from Azure Key Vault.")
+            if hasattr(e, "stderr") and e.stderr:
+                print(f"  Azure CLI error: {e.stderr.strip()}")
 
     if not token:
-        print("""
-Before continuing, you need an FM API token.
+        print("\n[ERROR] No FM token available for API calls.")
+        print("This script is non-interactive and will not prompt for a token.")
+        print("\nProvide the token using ONE of these methods:")
+        print("  A) Upload to Key Vault (recommended) and ensure Azure CLI is logged in:")
+        print(f"     az login")
+        print(f"     az keyvault secret set --vault-name \"{KEY_VAULT_NAME}\" --name \"{FM_TOKEN_SECRET_NAME}\" --value \"<PASTE_FM_TOKEN_HERE>\"")
+        print("     Then re-run this script.")
+        print("\n  B) Set an environment variable and re-run:")
+        print("     Windows PowerShell:  $env:GIGAMON_FM_TOKEN = \"<PASTE_FM_TOKEN_HERE>\"")
+        print("     macOS/Linux:         export GIGAMON_FM_TOKEN=\"<PASTE_FM_TOKEN_HERE>\"")
+        sys.exit(1)
 
-To create one:
-  1. Open https://{}  in your browser and log in as admin
-  2. Go to: Administration > User Management > Tokens > Current User Tokens
-  3. Click 'New Token'
-  4. Set: Name = Lab_Token, Expiry = 105 days, User Group = Super Admin Group
-  5. Click OK and COPY the full token string shown (it is only displayed once)
-  6. Paste it below
-""".format(FM_IP))
-        token = input("Paste FM API token here: ").strip()
-        if not token:
-            print("No token provided. Exiting.")
-            sys.exit(1)
-
+    print(f"  Token source: {token_source}")
     print(f"  Token: {token[:20]}...{token[-10:]} ({len(token)} chars)")
     return token
-
-def _ssh_sed_set(vm_ip, key, value, config_path="/etc/gigamon-cloud.conf"):
-    escaped_value = str(value).replace("|", "\\|")
-    cmd = f"sed -i \"s|^\\\\([[:space:]]*{key}:\\\\).*|\\\\1 {escaped_value}|\" {config_path}"
-    return run_ssh_command(vm_ip, cmd, use_sudo=True)
-
-def push_registration_token(vm_ip, token, remote_address=None, remote_port=None):
-    """Push token (and optionally remoteAddress/remotePort) and trigger agent refresh on the VM."""
-    print(f"Pushing registration settings to {vm_ip}...")
-
-    # Ensure config exists (cloud-init should have created it)
-    if run_ssh_command(vm_ip, "test -f /etc/gigamon-cloud.conf && echo FOUND || echo NOT_FOUND") != "FOUND":
-        print(f"  [!] /etc/gigamon-cloud.conf not found on {vm_ip}. Skipping.")
-        return False
-
-    _ssh_sed_set(vm_ip, "token", token)
-
-    if remote_address is not None:
-        _ssh_sed_set(vm_ip, "remoteAddress", remote_address)
-    if remote_port is not None:
-        _ssh_sed_set(vm_ip, "remotePort", remote_port)
-
-    # The VM-side systemd path unit will also react to the file change,
-    # but starting the oneshot makes this immediate/idempotent.
-    run_ssh_command(vm_ip, "systemctl start gigamon-agent-refresh.service || true", use_sudo=True)
-    return True
 
 def create_monitoring_domain(domain_alias):
     """Creates the Monitoring Domain via FM API using 'anyCloud' platform."""
@@ -244,16 +236,8 @@ def create_monitoring_domain(domain_alias):
             return None
                 
         elif response.status_code == 409:
-            print(f"Monitoring Domain '{domain_alias}' already exists (409 Conflict).")
-            
-            # Interactive prompt as requested
-            choice = input("Do you want to continue and create/verify the Monitoring Session? (y/n): ").strip().lower()
-            if choice != 'y':
-                print("Aborting configuration.")
-                sys.exit(1)
-            
-            print("Attempting to retrieve ID from existing domains again...")
-            # Retry GET to find ID with robust parsing
+            # Non-interactive: domain exists; retrieve ID and continue.
+            print(f"Monitoring Domain '{domain_alias}' already exists (409 Conflict). Retrieving its ID...")
             try:
                 resp = requests.get(url, headers=AUTH_HEADERS, verify=False)
                 if resp.status_code == 200:
@@ -264,21 +248,16 @@ def create_monitoring_domain(domain_alias):
                         domains = data
                     else:
                         domains = []
-                    
+
                     for d in domains:
                         if isinstance(d, dict) and d.get('alias') == domain_alias:
                             print(f"Found existing Domain ID: {d.get('id')}")
                             return d.get('id')
+                print("[!] Domain exists but could not retrieve ID from API listing.")
+                return None
             except Exception as e:
-                print(f"Retry GET failed: {e}")
-            
-            # Fallback: Ask (User likely has FM open)
-            print("[!] Could not retrieve ID for existing domain automatically.")
-            manual_id = input("Please paste the Monitoring Domain ID from FM (or press Enter to skip Session creation): ").strip()
-            if manual_id:
-                return manual_id
-            
-            return None
+                print(f"[!] Domain exists but GET retry failed: {e}")
+                return None
         else:
             print(f"Failed to create Monitoring Domain. API returned {response.status_code}")
             print(f"Response: {response.text}")
@@ -318,10 +297,112 @@ def create_anycloud_connection(domain_id, connection_alias):
     except Exception as e:
         print(f"Error creating connection: {e}")
 
+def push_uctv_config(token):
+    """Pushes the registration token and config to the UCTV Controller via SSH."""
+    if not UCTV_CONTROLLER_IP:
+        return
+        
+    print(f"\n--- Step 2/4: Register UCTV Controller via SSH ---")
+    print(f"Pushing configuration to UCTV Controller ({UCTV_CONTROLLER_IP})...")
+    
+    config_content = f"""Registration:
+  groupName: {FM_GROUP}
+  subGroupName: {FM_SUBGROUP}
+  token: {token}
+  remoteAddress: {FM_IP}
+  remotePort: 443
+"""
+    
+    ssh_cmd = [
+        "ssh", "-i", "./lab_key.pem", "-o", "StrictHostKeyChecking=no",
+        f"peter@{UCTV_CONTROLLER_IP}",
+        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart uctv-cntlr'"
+    ]
+    
+    print(f"  Attempting SSH connection to peter@{UCTV_CONTROLLER_IP}...")
+    try:
+        process = subprocess.run(
+            ssh_cmd, 
+            input=config_content, 
+            text=True, 
+            capture_output=True,
+            check=True
+        )
+        print("  [SUCCESS] Successfully wrote /etc/gigamon-cloud.conf and restarted uctv-cntlr service.")
+    except FileNotFoundError:
+        print("  [ERROR] 'ssh' command not found on PATH. Ensure SSH client is installed and accessible.")
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Failed to push config via SSH.")
+        print(f"  Ensure 'lab_key.pem' is in the current directory.")
+        if e.stderr:
+            print(f"  SSH Error: {e.stderr.strip()}")
+    except Exception as e:
+        print(f"  [ERROR] Unhandled exception during SSH: {e}")
+
+def push_vseries_config(token):
+    """Pushes the registration token and config to the vSeries node via SSH."""
+    if not VSERIES_IP:
+        return
+        
+    print(f"\n--- Step 3/4: Register vSeries Node via SSH ---")
+    print(f"Pushing configuration to vSeries node ({VSERIES_IP})...")
+    
+    config_content = f"""Registration:
+  groupName: {FM_GROUP}
+  subGroupName: {FM_SUBGROUP}
+  token: {token}
+  remoteAddress: {FM_IP}
+  remotePort: 443
+"""
+    
+    # Run SSH natively and pass the config via stdin to avoid quoting issues
+    ssh_cmd = [
+        "ssh", "-i", "./lab_key.pem", "-o", "StrictHostKeyChecking=no",
+        f"peter@{VSERIES_IP}",
+        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart vseries-node'"
+    ]
+    
+    print(f"  Attempting SSH connection to peter@{VSERIES_IP}...")
+    try:
+        process = subprocess.run(
+            ssh_cmd, 
+            input=config_content, 
+            text=True, 
+            capture_output=True,
+            check=True
+        )
+        print("  [SUCCESS] Successfully wrote /etc/gigamon-cloud.conf and restarted vseries-node service.")
+    except FileNotFoundError:
+        print("  [ERROR] 'ssh' command not found on PATH. Ensure SSH client is installed and accessible.")
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Failed to push config via SSH.")
+        print(f"  Ensure 'lab_key.pem' is in the current directory.")
+        if e.stderr:
+            print(f"  SSH Error: {e.stderr.strip()}")
+    except Exception as e:
+        print(f"  [ERROR] Unhandled exception during SSH: {e}")
+
+def restart_ubuntu_agents():
+    """Restarts the UCTV agent on the production Ubuntu VMs via SSH."""
+    print(f"\n--- Step 4/4: Restart Ubuntu UCTV Agents via SSH ---")
+    for ip, name in [(PROD1_IP, "prod-ubuntu-1"), (PROD2_IP, "prod-ubuntu-2")]:
+        if not ip:
+            continue
+        print(f"Restarting uctv agent daemon on {name} ({ip})...")
+        ssh_cmd = [
+            "ssh", "-i", "./lab_key.pem", "-o", "StrictHostKeyChecking=no",
+            f"peter@{ip}",
+            "sudo systemctl restart uctv"
+        ]
+        try:
+            subprocess.run(ssh_cmd, capture_output=True, check=True)
+            print(f"  [SUCCESS] Successfully restarted uctv service on {name}.")
+        except Exception as e:
+            print(f"  [WARNING] Could not restart agent on {name}. It may restart automatically later via timer.")
 
 def main():
     print("---------------------------------------------------------")
-    print("   Gigamon V Series - Post-Deployment Configuration")
+    print("   Gigamon V Series - FM API Configuration")
     print("---------------------------------------------------------")
 
     if not check_fm_accessible():
@@ -342,20 +423,16 @@ def main():
     monitoring_domain = FM_GROUP
     subgroup_name = FM_SUBGROUP
 
-    os.system('cls' if os.name == 'nt' else 'clear')
     print("\n" + "="*60)
     print("Configuration Summary")
     print("="*60)
     print(f"  FM:               {FM_URL}")
     print(f"  Monitoring Domain: {monitoring_domain}")
     print(f"  Connection:        {subgroup_name}")
-    print(f"  UCT-V Controller:  {UCTV_PUBLIC_IP} (private: {UCTV_IP})")
-    print(f"  vSeries:           {VSERIES_PUBLIC_IP}")
-    print(f"  Prod VMs:          {', '.join(PROD_IPS)}")
     print()
 
-    # 2. FM API Configuration (Monitoring Domain)
-    print("--- Step 1/2: FM API Configuration ---")
+    # FM API Configuration (Monitoring Domain + Connection)
+    print("--- Step 1/1: FM API Configuration ---")
     print(f"Creating Monitoring Domain '{monitoring_domain}'...")
 
     domain_id = create_monitoring_domain(monitoring_domain)
@@ -364,23 +441,16 @@ def main():
         create_anycloud_connection(domain_id, subgroup_name)
     else:
         print("\n[WARNING] Monitoring Domain creation failed or skipped.")
-        print("Agents *may* fail to register if the domain does not exist in FM.")
-        input("Press Enter to continue with Agent Configuration (or Ctrl+C to abort)...")
+        print("You can retry later once FM is fully initialized.")
 
-    # 3. Configure Agents (SSH)
-    print("\n--- Step 2/2: Agent Configuration (SSH) ---")
+    # 3. Register the UCTV node via SSH
+    push_uctv_config(agent_token)
 
-    print(f"\n[1/3] Configuring UCT-V Controller ({UCTV_PUBLIC_IP})...")
-    push_registration_token(UCTV_PUBLIC_IP, agent_token, remote_address=FM_IP, remote_port=443)
+    # 4. Register the vSeries node via SSH
+    push_vseries_config(agent_token)
 
-    print(f"\n[2/3] Configuring vSeries Node ({VSERIES_PUBLIC_IP})...")
-    push_registration_token(VSERIES_PUBLIC_IP, agent_token, remote_address=FM_IP, remote_port=443)
-
-    print(f"\n[3/3] Configuring Production VMs...")
-    for ip in PROD_IPS:
-        if ip:
-            print(f"  -> {ip}")
-            push_registration_token(ip, agent_token, remote_address=UCTV_IP, remote_port=8892)
+    # 5. Restart the production Ubuntu agents to force immediate registration
+    restart_ubuntu_agents()
 
     print("\n" + "="*60)
     print("Configuration Complete!")
@@ -388,7 +458,9 @@ def main():
     print(f"  Verify in FM:  {FM_URL}/app/#/cloud/monitoringDomains")
     print(f"  Domain:        {monitoring_domain}")
     print(f"  Connection:    {subgroup_name}")
-    print("\nCheck FM Inventory for registered UCT-V Controllers and vSeries nodes.")
+    print("\nUCT-V Agent (Workloads) registration: Handled by cloud-init + Key Vault.")
+    print("UCT-V Controller registration: Handled by SSH direct push.")
+    print("vSeries Node registration: Handled by SSH direct push.")
     print("="*60)
 
 if __name__ == "__main__":

@@ -17,14 +17,14 @@ output "fm_private_ip" {
 }
 
 # UCT-V Controller Outputs
-output "uctv_public_ip" {
-  description = "Public IP address of UCT-V Controller. Used for troubleshooting/maintenance."
-  value       = module.uctv.public_ip
+output "uctv_controller_public_ip" {
+  description = "The public IP address of the UCT-V Controller"
+  value       = module.uctv_controller.public_ip
 }
 
-output "uctv_private_ip" {
-  description = "Private IP address of UCT-V Controller (internal visibility subnet). Agents register to this address."
-  value       = module.uctv.private_ip
+output "uctv_controller_private_ip" {
+  description = "The private IP address of the UCT-V Controller (Mgmt interface)"
+  value       = module.uctv_controller.private_ip
 }
 
 # vSeries Node Outputs
@@ -65,13 +65,11 @@ output "tool_vm_public_ip" {
 }
 
 # UCT-V Registration Details
-output "uctv_registration_info" {
-  description = "UCT-V Controller registration information and configuration."
+output "uctv_controller_registration_info" {
+  description = "Information needed to register the UCT-V Controller with FM"
   value = {
-    fm_endpoint  = "https://${module.fm.public_ip}"
-    uctv_private = module.uctv.private_ip
-    config_file  = "/etc/gigamon-cloud.conf"
-    instructions = "UCT-V and agents automatically configured in cloud-init and via configure_lab.py."
+    ssh_command  = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.uctv_controller.public_ip}"
+    uctv_private = module.uctv_controller.private_ip
   }
 }
 
@@ -85,8 +83,8 @@ output "deployment_summary" {
     ssh_key      = "Provide your SSH key for authentication"
     next_steps = [
       "1. Access FM web interface using fm_public_ip",
-      "2. Run 'python scripts/configure_lab.py' to register environment & UCT-V Controller",
-      "3. Prod VMs deploy UCT-V agent and auto-register to UCT-V Controller",
+      "2. Generate FM API token in the FM UI and upload it to Key Vault (see README)",
+      "3. (Optional) Run 'python scripts/configure_lab.py' to create Monitoring Domain + Connection via FM API",
       "4. SSH into prod VMs to generate traffic with iperf3",
       "5. Monitor traffic visibility through GigaVUE-FM dashboard"
     ]
@@ -96,6 +94,16 @@ output "deployment_summary" {
 output "lab_key_pem_filename" {
   description = "The absolute path to the generated SSH private key file."
   value       = local_file.lab_key_pem.filename
+}
+
+output "key_vault_name" {
+  description = "Azure Key Vault name used to store the FM API token (JWT)."
+  value       = azurerm_key_vault.fm_token_kv.name
+}
+
+output "fm_token_secret_name" {
+  description = "Key Vault secret name that will contain the FM API token (JWT)."
+  value       = var.fm_token_secret_name
 }
 
 # =============================================================================
@@ -108,9 +116,9 @@ output "ssh_fm" {
   value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.fm.public_ip}"
 }
 
-output "ssh_uctv" {
+output "ssh_uctv_controller" {
   description = "SSH command for UCT-V Controller"
-  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.uctv.public_ip}"
+  value       = "ssh -i ${local_file.lab_key_pem.filename} ${var.admin_username}@${module.uctv_controller.public_ip}"
 }
 
 output "ssh_vseries" {

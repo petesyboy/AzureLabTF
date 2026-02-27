@@ -49,6 +49,10 @@ resource "azurerm_virtual_machine" "vm" {
   primary_network_interface_id = azurerm_network_interface.nic.id
   vm_size                      = var.vm_size
 
+  identity {
+    type = "SystemAssigned"
+  }
+
   delete_os_disk_on_termination    = true
   delete_data_disks_on_termination = true
 

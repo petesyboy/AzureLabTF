@@ -18,74 +18,12 @@ locals {
   EOF
 
   # UCT-V Controller Cloud-Init
-  # We create the config file with placeholders. The Python script will populate the token.
+  # Configuration is handled post-deployment via SSH direct push.
   uctv_cloud_init = <<-EOF
     #cloud-config
-    write_files:
-      - path: /etc/gigamon-cloud.conf
-        permissions: '0644'
-        owner: root:root
-        content: |
-          Registration:
-            groupName: ${var.fm_group_name}
-            subGroupName: ${var.fm_subgroup_name}
-            token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.fm.public_ip}
-            remotePort: 443
-
-      - path: /usr/local/sbin/gigamon-agent-refresh.sh
-        permissions: '0755'
-        owner: root:root
-        content: |
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          CONF="/etc/gigamon-cloud.conf"
-          SERVICE="uctv-cntlr"
-
-          if [[ ! -f "$CONF" ]]; then
-            exit 0
-          fi
-
-          if grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
-            echo "gigamon-cloud.conf still has placeholder token; skipping restart."
-            exit 0
-          fi
-
-          systemctl restart "$SERVICE"
-
-      - path: /etc/systemd/system/gigamon-agent-refresh.service
-        permissions: '0644'
-        owner: root:root
-        content: |
-          [Unit]
-          Description=Refresh Gigamon agent after config change
-          After=network-online.target
-          Wants=network-online.target
-
-          [Service]
-          Type=oneshot
-          ExecStart=/usr/local/sbin/gigamon-agent-refresh.sh
-
-      - path: /etc/systemd/system/gigamon-agent-refresh.path
-        permissions: '0644'
-        owner: root:root
-        content: |
-          [Unit]
-          Description=Watch /etc/gigamon-cloud.conf for changes
-
-          [Path]
-          PathChanged=/etc/gigamon-cloud.conf
-          Unit=gigamon-agent-refresh.service
-
-          [Install]
-          WantedBy=multi-user.target
-
+    packages: []
     runcmd:
-      - echo "UCT-V Controller initialized. Waiting for configuration..."
-      - systemctl daemon-reload
-      - systemctl enable --now gigamon-agent-refresh.path || true
-      - systemctl start gigamon-agent-refresh.service || true
+      - echo "UCT-V Controller initialized. Waiting for configuration via SSH..."
   EOF
 
   # vSeries Cloud-Init
@@ -102,6 +40,112 @@ locals {
             token: PLACEHOLDER_TOKEN
             remoteAddress: ${module.fm.public_ip}
             remotePort: 443
+
+      - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CONF="/etc/gigamon-cloud.conf"
+          KV_NAME="${azurerm_key_vault.fm_token_kv.name}"
+          SECRET_NAME="${var.fm_token_secret_name}"
+          KV_API_VERSION="7.4"
+
+          if [[ ! -f "$CONF" ]]; then
+            exit 0
+          fi
+
+          if ! grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+            systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+            exit 0
+          fi
+
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "curl not found; cannot fetch Key Vault secret."
+            exit 0
+          fi
+
+          MSI_JSON="$(curl -sS -H 'Metadata: true' \
+            'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' || true)"
+
+          ACCESS_TOKEN=""
+          if command -v jq >/dev/null 2>&1; then
+            ACCESS_TOKEN="$(echo "$MSI_JSON" | jq -r '.access_token // empty' || true)"
+          elif command -v python3 >/dev/null 2>&1; then
+            ACCESS_TOKEN="$(python3 - <<'PY' 2>/dev/null || true
+import json,sys
+try:
+  print(json.load(sys.stdin).get("access_token",""))
+except Exception:
+  print("")
+PY
+<<<"$MSI_JSON")"
+          else
+            ACCESS_TOKEN="$(echo "$MSI_JSON" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+          fi
+
+          if [[ -z "$ACCESS_TOKEN" ]]; then
+            echo "No managed identity access token yet (RBAC propagation?); will retry."
+            exit 0
+          fi
+
+          SECRET_URL="https://$${KV_NAME}.vault.azure.net/secrets/$${SECRET_NAME}?api-version=$${KV_API_VERSION}"
+          SECRET_JSON="$(curl -sS -H "Authorization: Bearer $${ACCESS_TOKEN}" "$SECRET_URL" || true)"
+
+          FM_TOKEN=""
+          if command -v jq >/dev/null 2>&1; then
+            FM_TOKEN="$(echo "$SECRET_JSON" | jq -r '.value // empty' || true)"
+          elif command -v python3 >/dev/null 2>&1; then
+            FM_TOKEN="$(python3 - <<'PY' 2>/dev/null || true
+import json,sys
+try:
+  print(json.load(sys.stdin).get("value",""))
+except Exception:
+  print("")
+PY
+<<<"$SECRET_JSON")"
+          else
+            FM_TOKEN="$(echo "$SECRET_JSON" | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+          fi
+
+          if [[ -z "$FM_TOKEN" ]]; then
+            echo "Secret not available yet (or access denied); will retry."
+            exit 0
+          fi
+
+          sed -i "s|^\\([[:space:]]*token:\\).*|\\1 $${FM_TOKEN}|" "$CONF"
+          systemctl start gigamon-agent-refresh.service >/dev/null 2>&1 || true
+          systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+
+      - path: /etc/systemd/system/fm-token-fetch.service
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Fetch FM token from Azure Key Vault
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/fetch-fm-token-from-keyvault.sh
+
+      - path: /etc/systemd/system/fm-token-fetch.timer
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Periodically fetch FM token from Azure Key Vault
+
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec=60s
+          RandomizedDelaySec=15s
+
+          [Install]
+          WantedBy=timers.target
 
       - path: /usr/local/sbin/gigamon-agent-refresh.sh
         permissions: '0755'
@@ -154,6 +198,8 @@ locals {
     runcmd:
       - echo "vSeries Node initialized. Waiting for configuration..."
       - systemctl daemon-reload
+      - systemctl enable --now fm-token-fetch.timer || true
+      - systemctl start fm-token-fetch.service || true
       - systemctl enable --now gigamon-agent-refresh.path || true
       - systemctl start gigamon-agent-refresh.service || true
   EOF
@@ -230,7 +276,7 @@ locals {
       # Add local firewall exception for VXLAN UDP 4789 (no-op if ufw disabled)
       - ufw allow 4789/udp || true
       # Allow ingress from UCT-V Controller and FM (if needed for tool VM logic)
-      - ufw allow from ${module.uctv.private_ip} || true
+      - ufw allow from ${module.uctv_controller.private_ip} || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi
   EOF
 
@@ -254,8 +300,77 @@ locals {
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.uctv.private_ip}
+            remoteAddress: ${module.uctv_controller.private_ip}
             remotePort: 8892
+
+      - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CONF="/etc/gigamon-cloud.conf"
+          KV_NAME="${azurerm_key_vault.fm_token_kv.name}"
+          SECRET_NAME="${var.fm_token_secret_name}"
+          KV_API_VERSION="7.4"
+
+          if [[ ! -f "$CONF" ]]; then
+            exit 0
+          fi
+
+          if ! grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+            systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+            exit 0
+          fi
+
+          MSI_JSON="$(curl -sS -H 'Metadata: true' \
+            'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' || true)"
+          ACCESS_TOKEN="$(echo "$MSI_JSON" | jq -r '.access_token // empty' || true)"
+          if [[ -z "$ACCESS_TOKEN" ]]; then
+            echo "No managed identity access token yet (RBAC propagation?); will retry."
+            exit 0
+          fi
+
+          SECRET_URL="https://$${KV_NAME}.vault.azure.net/secrets/$${SECRET_NAME}?api-version=$${KV_API_VERSION}"
+          SECRET_JSON="$(curl -sS -H "Authorization: Bearer $${ACCESS_TOKEN}" "$SECRET_URL" || true)"
+          FM_TOKEN="$(echo "$SECRET_JSON" | jq -r '.value // empty' || true)"
+          if [[ -z "$FM_TOKEN" ]]; then
+            echo "Secret not available yet (or access denied); will retry."
+            exit 0
+          fi
+
+          sed -i "s|^\\([[:space:]]*token:\\).*|\\1 $${FM_TOKEN}|" "$CONF"
+          systemctl start gigamon-agent-refresh.service >/dev/null 2>&1 || true
+          systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+
+      - path: /etc/systemd/system/fm-token-fetch.service
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Fetch FM token from Azure Key Vault
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/fetch-fm-token-from-keyvault.sh
+
+      - path: /etc/systemd/system/fm-token-fetch.timer
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Periodically fetch FM token from Azure Key Vault
+
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec=60s
+          RandomizedDelaySec=15s
+
+          [Install]
+          WantedBy=timers.target
 
       - path: /usr/local/sbin/gigamon-agent-refresh.sh
         permissions: '0755'
@@ -315,6 +430,8 @@ locals {
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
       - systemctl daemon-reload
+      - systemctl enable --now fm-token-fetch.timer || true
+      - systemctl start fm-token-fetch.service || true
       - systemctl enable --now gigamon-agent-refresh.path || true
       - systemctl start gigamon-agent-refresh.service || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi
@@ -339,8 +456,77 @@ locals {
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.uctv.private_ip}
+            remoteAddress: ${module.uctv_controller.private_ip}
             remotePort: 8892
+
+      - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CONF="/etc/gigamon-cloud.conf"
+          KV_NAME="${azurerm_key_vault.fm_token_kv.name}"
+          SECRET_NAME="${var.fm_token_secret_name}"
+          KV_API_VERSION="7.4"
+
+          if [[ ! -f "$CONF" ]]; then
+            exit 0
+          fi
+
+          if ! grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+            systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+            exit 0
+          fi
+
+          MSI_JSON="$(curl -sS -H 'Metadata: true' \
+            'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' || true)"
+          ACCESS_TOKEN="$(echo "$MSI_JSON" | jq -r '.access_token // empty' || true)"
+          if [[ -z "$ACCESS_TOKEN" ]]; then
+            echo "No managed identity access token yet (RBAC propagation?); will retry."
+            exit 0
+          fi
+
+          SECRET_URL="https://$${KV_NAME}.vault.azure.net/secrets/$${SECRET_NAME}?api-version=$${KV_API_VERSION}"
+          SECRET_JSON="$(curl -sS -H "Authorization: Bearer $${ACCESS_TOKEN}" "$SECRET_URL" || true)"
+          FM_TOKEN="$(echo "$SECRET_JSON" | jq -r '.value // empty' || true)"
+          if [[ -z "$FM_TOKEN" ]]; then
+            echo "Secret not available yet (or access denied); will retry."
+            exit 0
+          fi
+
+          sed -i "s|^\\([[:space:]]*token:\\).*|\\1 $${FM_TOKEN}|" "$CONF"
+          systemctl start gigamon-agent-refresh.service >/dev/null 2>&1 || true
+          systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+
+      - path: /etc/systemd/system/fm-token-fetch.service
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Fetch FM token from Azure Key Vault
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/fetch-fm-token-from-keyvault.sh
+
+      - path: /etc/systemd/system/fm-token-fetch.timer
+        permissions: '0644'
+        owner: root:root
+        content: |
+          [Unit]
+          Description=Periodically fetch FM token from Azure Key Vault
+
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec=60s
+          RandomizedDelaySec=15s
+
+          [Install]
+          WantedBy=timers.target
 
       - path: /usr/local/sbin/gigamon-agent-refresh.sh
         permissions: '0755'
@@ -400,6 +586,8 @@ locals {
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
       - systemctl daemon-reload
+      - systemctl enable --now fm-token-fetch.timer || true
+      - systemctl start fm-token-fetch.service || true
       - systemctl enable --now gigamon-agent-refresh.path || true
       - systemctl start gigamon-agent-refresh.service || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi

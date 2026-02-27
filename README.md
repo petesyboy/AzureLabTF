@@ -126,15 +126,14 @@ Terraform generates a Python script (`scripts/configure_lab.py`) from the templa
 1.  **Wait for FM**: Polls the GigaVUE-FM API until the system is ready.
 2.  **Authenticate**: Uses a pre-generated FM API token (JWT) that you create once via the FM web UI. The token is used for both REST API calls and agent registration.
 3.  **Create Monitoring Domain**: Creates the `anyCloud` Monitoring Domain and Connection in FM via REST API.
-4.  **Configure Agents (Token Push)**: Connects via SSH to the **UCT-V Controller**, **vSeries Node**, and **Production VMs** and updates the registration token in `/etc/gigamon-cloud.conf`.
-5.  **Agent Auto-Refresh**: Each VM includes a small systemd path unit (installed via cloud-init) that watches `/etc/gigamon-cloud.conf` and restarts the appropriate Gigamon service automatically when the file changes. The script also triggers the oneshot refresh to make registration immediate.
+4.  **Agent Registration (Key Vault + Cloud-Init)**: Agents self-register. Each VM periodically fetches the FM token from Azure Key Vault via managed identity, writes it into `/etc/gigamon-cloud.conf`, and a local systemd path unit restarts the relevant Gigamon service on config change.
 
 ## Deployment Instructions
 
 ### Prerequisites
 *   [Terraform](https://www.terraform.io/downloads.html) >= 1.5.0
 *   [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)
-*   Python 3.x (with `requests` and `paramiko` libraries)
+*   Python 3.x (with `requests` library)
 
 ### 1. Initialize and Deploy
 Run the standard Terraform workflow:
@@ -158,7 +157,12 @@ The deployment creates the infrastructure, but GigaVUE-FM requires manual initia
     *   **Change the Password** when prompted.
 
 #### 2b. Generate an FM API Token
-The automation script uses a long-lived FM API token for both REST API calls and agent registration. You only need to do this once per deployment.
+This lab uses a long-lived FM API token (JWT) for:
+
+- FM REST API calls (Monitoring Domain + Connection creation)
+- Agent registration (VMs fetch the token from Azure Key Vault via managed identity)
+
+You only need to generate the token once per deployment.
 
 1.  Log into FM as `admin`
 2.  Go to **Administration → User Management → Tokens → Current User Tokens**
@@ -168,21 +172,70 @@ The automation script uses a long-lived FM API token for both REST API calls and
     *   **User Group**: `Super Admin Group`
 4.  Click **OK** — the token is shown **once only**. Copy it immediately.
 
-#### 2c. Run the Automation Script
+#### 2c. Upload the FM API Token to Azure Key Vault (Recommended)
+This lab creates an Azure Key Vault and assigns **managed identities** to the UCT-V, vSeries, and prod VMs so they can fetch the token securely at boot.
+
+- The token value is **not stored in Terraform state**.
+- After you upload the secret, the VMs automatically update `/etc/gigamon-cloud.conf` and restart the relevant Gigamon services.
+
+0. Ensure you are logged into Azure CLI in the correct subscription:
+
+```bash
+az login
+az account show
+```
+
+1. Get the Key Vault and secret names from Terraform outputs:
+
+```bash
+terraform output -raw key_vault_name
+terraform output -raw fm_token_secret_name
+```
+
+2. Upload the token as a secret (paste the full token value):
+
+```bash
+KV_NAME="$(terraform output -raw key_vault_name)"
+SECRET_NAME="$(terraform output -raw fm_token_secret_name)"
+
+az keyvault secret set --vault-name "$KV_NAME" --name "$SECRET_NAME" --value "<PASTE_FM_TOKEN_HERE>"
+```
+
+Notes:
+- RBAC role assignment can take 1–3 minutes to propagate after `terraform apply`. If `az keyvault secret set` fails with permission errors, wait a minute and try again.
+- You must be logged in with `az login` to the same tenant/subscription you deployed into.
+
+3. (Optional) Verify on a VM that the placeholder was replaced:
+
+```bash
+terraform output -raw ssh_uctv | xargs
+sudo grep -n "token:" /etc/gigamon-cloud.conf
+sudo systemctl status fm-token-fetch.timer --no-pager || true
+sudo systemctl status gigamon-agent-refresh.path --no-pager || true
+```
+
+#### 2d. Run the Automation Script (Optional)
 From your terminal in the project root:
 ```bash
 # Activate the virtual environment first
 .\scripts\.venv\Scripts\activate  # Windows
 source scripts/.venv/bin/activate  # macOS/Linux
 
+# Install script dependencies (one-time)
+pip install -r scripts/requirements.txt
+
 # Run the script
 python scripts/configure_lab.py
 ```
 The script will:
 - Wait for FM to be ready (polls until API responds)
-- Prompt you to paste your FM API token (if not hardcoded in the script)
+- Read your FM API token from Azure Key Vault via `az` (or from `GIGAMON_FM_TOKEN` / `FM_TOKEN`)
 - Create the Monitoring Domain and Connection in FM
-- Push the FM token into the agent config on all VMs (agent services auto-refresh on config change)
+- (No SSH token push) Agent registration is handled by Key Vault + cloud-init
+
+If you used the **Key Vault** method above, the agents will self-register without needing the script to push tokens. You can either:
+- Run the script anyway (it will still work), or
+- Configure the Monitoring Domain/Connection manually in the FM UI and skip the script entirely.
 
 ### 3. Retrieve Connection Details
 Once configured, you can access the environment using the generated key `lab_key.pem`:

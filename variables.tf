@@ -160,3 +160,14 @@ variable "vseries_image_version" {
   type    = string
   default = "6.12.00"
 }
+
+# -----------------------------------------------------------------------------
+# Optional: FM API token delivery via Azure Key Vault
+# -----------------------------------------------------------------------------
+# This avoids putting the FM token into Terraform state and avoids manual "push token over SSH".
+
+variable "fm_token_secret_name" {
+  type        = string
+  description = "Azure Key Vault secret name that will hold the GigaVUE-FM API token (JWT)."
+  default     = "gigamon-fm-token"
+}

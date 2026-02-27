@@ -61,6 +61,45 @@ resource "azurerm_resource_group" "rg" {
 }
 
 ############################################################
+# Optional: Key Vault for FM Token (no secret in TF state)
+############################################################
+
+data "azurerm_client_config" "current" {}
+
+resource "random_string" "kv_suffix" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+resource "azurerm_key_vault" "fm_token_kv" {
+  name                = "kv${random_string.kv_suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  sku_name            = "standard"
+
+  # Use Azure RBAC instead of legacy access policies
+  enable_rbac_authorization     = true
+  public_network_access_enabled = true
+
+  tags = {
+    Environment = "demo"
+    Owner       = "gigamon-terraform"
+    owner       = var.gigamon_email
+    Project     = var.project_name
+  }
+}
+
+# Allow the Terraform caller to upload/update the token secret.
+# Note: role assignments can take a minute or two to propagate.
+resource "azurerm_role_assignment" "kv_secrets_officer_current_user" {
+  scope                = azurerm_key_vault.fm_token_kv.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+############################################################
 # Networking
 ############################################################
 
@@ -124,7 +163,7 @@ module "fm" {
 # -----------------------------------------------------------------------------
 # Deploys the UCT-V Controller, which manages tap points in the cloud deployment.
 
-module "uctv" {
+module "uctv_controller" {
   source = "./modules/gigamon-vm"
 
   vm_name             = "uctv-controller"
@@ -229,7 +268,7 @@ module "tool_vm" {
 module "prod1" {
   source = "./modules/linux-vm"
 
-  depends_on = [module.uctv]
+  depends_on = [module.uctv_controller]
 
   vm_name             = "prod-ubuntu-1"
   location            = azurerm_resource_group.rg.location
@@ -255,7 +294,7 @@ module "prod1" {
 module "prod2" {
   source = "./modules/linux-vm"
 
-  depends_on = [module.uctv]
+  depends_on = [module.uctv_controller]
 
   vm_name             = "prod-ubuntu-2"
   location            = azurerm_resource_group.rg.location
@@ -282,22 +321,41 @@ module "prod2" {
 # -----------------------------------------------------------------------------
 # Orchestration
 # -----------------------------------------------------------------------------
-data "azurerm_client_config" "current" {}
+resource "azurerm_role_assignment" "kv_secrets_user_uctv" {
+  scope                = azurerm_key_vault.fm_token_kv.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = module.uctv_controller.principal_id
+}
+
+resource "azurerm_role_assignment" "kv_secrets_user_vseries" {
+  scope                = azurerm_key_vault.fm_token_kv.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = module.vseries.principal_id
+}
+
+resource "azurerm_role_assignment" "kv_secrets_user_prod1" {
+  scope                = azurerm_key_vault.fm_token_kv.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = module.prod1.principal_id
+}
+
+resource "azurerm_role_assignment" "kv_secrets_user_prod2" {
+  scope                = azurerm_key_vault.fm_token_kv.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = module.prod2.principal_id
+}
 
 resource "local_file" "configure_script" {
   filename = "${path.module}/scripts/configure_lab.py"
   content = templatefile("${path.module}/scripts/configure_lab.py.tftpl", {
-    fm_ip             = module.fm.public_ip
-    uctv_ip           = module.uctv.private_ip
-    uctv_public_ip    = module.uctv.public_ip
-    vseries_public_ip = module.vseries.public_ip
-    tool_public_ip    = module.tool_vm.public_ip
-    prod_ips          = join(",", [module.prod1.public_ip, module.prod2.public_ip])
-    key_path          = abspath(local_file.lab_key_pem.filename)
-    username          = var.admin_username
-    fm_group          = var.fm_group_name
-    fm_subgroup       = var.fm_subgroup_name
-    subscription_id   = data.azurerm_client_config.current.subscription_id
-    tenant_id         = data.azurerm_client_config.current.tenant_id
+    fm_ip                = module.fm.public_ip
+    fm_group             = var.fm_group_name
+    fm_subgroup          = var.fm_subgroup_name
+    key_vault_name       = azurerm_key_vault.fm_token_kv.name
+    fm_token_secret_name = var.fm_token_secret_name
+    vseries_ip           = module.vseries.public_ip
+    uctv_controller_ip   = module.uctv_controller.public_ip
+    prod1_ip             = module.prod1.public_ip
+    prod2_ip             = module.prod2.public_ip
   })
 }
