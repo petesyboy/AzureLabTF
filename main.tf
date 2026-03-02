@@ -37,7 +37,15 @@ terraform {
 
 # Configure the Microsoft Azure Provider.
 provider "azurerm" {
-  features {}
+  features {
+    key_vault {
+      purge_soft_delete_on_destroy    = true
+      recover_soft_deleted_key_vaults = true
+    }
+    resource_group {
+      prevent_deletion_if_contains_resources = false
+    }
+  }
 }
 
 ############################################################
@@ -78,6 +86,9 @@ resource "azurerm_key_vault" "fm_token_kv" {
   resource_group_name = azurerm_resource_group.rg.name
   tenant_id           = data.azurerm_client_config.current.tenant_id
   sku_name            = "standard"
+
+  purge_protection_enabled   = false
+  soft_delete_retention_days = 7
 
   # Use Azure RBAC instead of legacy access policies
   enable_rbac_authorization     = true
