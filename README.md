@@ -1,4 +1,4 @@
-# Azure Lab 6.12: Gigamon V Series Cloud Tap Deployment
+# Azure Lab: Gigamon V Series Cloud Tap Deployment
 
 This repository contains Terraform Infrastructure-as-Code (IaC) and Python automation scripts to deploy a complete Gigamon V Series cloud-based traffic visibility and optimization lab environment in Microsoft Azure. The lab demonstrates third-party orchestration and management capabilities using Gigamon's GigaVUE-FM platform, rather than relying on native Azure deployment APIs. This illustrates how organizations can run independent orchestration and control planes in Azure while maintaining centralized, vendor-specific traffic management and visibility across cloud infrastructure.
 
@@ -20,7 +20,7 @@ The deployment creates a complete network topology with the following design pri
 
 ### Gigamon Management & Control Plane (Third-Party Orchestration)
 
-**GigaVUE-FM 6.12 (Fabric Manager)**
+**GigaVUE-FM (Fabric Manager)**
 - Centralized third-party management and orchestration platform
 - Deployed in Visibility Subnet on configurable VM size
 - Accessible via HTTPS web interface on public IP
@@ -97,6 +97,24 @@ After successful deployment, the following outputs are available:
 - `vseries_public_ip` - vSeries Node management/troubleshooting
 - `prod1_public_ip` - Production Ubuntu VM 1 SSH access
 - `prod2_public_ip` - Production Ubuntu VM 2 SSH access
+- `key_vault_name` - Name of the Azure Key Vault created for the lab
+- `fm_token_secret_name` - Name of the secret to store the FM API token
+
+### Action Required: Upload FM Token
+
+After deployment, you must generate an API token in GigaVUE-FM and upload it to the Azure Key Vault so agents can register.
+
+```bash
+# 1. Login to Azure
+az login
+
+# 2. Get Key Vault details from Terraform output
+KV_NAME="$(terraform output -raw key_vault_name)"
+SECRET_NAME="$(terraform output -raw fm_token_secret_name)"
+
+# 3. Upload the token (Generate this in FM: User Management -> Tokens)
+az keyvault secret set --vault-name "$KV_NAME" --name "$SECRET_NAME" --value "<PASTE_FM_TOKEN_HERE>"
+```
 
 ## Use Cases & Testing
 
@@ -121,12 +139,14 @@ This lab environment supports:
 
 ## Automation Logic
 
-Terraform generates a Python script (`scripts/configure_lab.py`) from the template file (`scripts/configure_lab.py.tftpl`). This script is **not automatically triggered** — you must run it manually after deployment. It performs the following actions:
+Terraform generates a Python script (`scripts/configure_lab.py`) from the template file (`scripts/configure_lab.py.tftpl`). When using the `lab-deploy.py` wrapper, this configuration script and a final **health status check** are executed automatically.
 
-1.  **Wait for FM**: Polls the GigaVUE-FM API until the system is ready.
+The automation performs the following actions:
+1.  **Wait for FM**: Polls the GigaVUE-FM API until the system is ready (usually 5-10 minutes).
 2.  **Authenticate**: Uses a pre-generated FM API token (JWT) that you create once via the FM web UI. The token is used for both REST API calls and agent registration.
 3.  **Create Monitoring Domain**: Creates the `anyCloud` Monitoring Domain and Connection in FM via REST API.
 4.  **Agent Registration (Key Vault + Cloud-Init)**: Agents self-register. Each VM periodically fetches the FM token from Azure Key Vault via managed identity, writes it into `/etc/gigamon-cloud.conf`, and a local systemd path unit restarts the relevant Gigamon service on config change.
+5.  **Status Check**: Performs a final verification of service health and reachability across all deployed components.
 
 ## Deployment Instructions
 
@@ -135,13 +155,29 @@ Terraform generates a Python script (`scripts/configure_lab.py`) from the templa
 *   [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)
 *   Python 3.x (with `requests` library)
 
-### 1. Initialize and Deploy
+### 1. Accept Azure Marketplace Terms
+You must accept the legal terms for the specific Gigamon image versions (6.13) before deployment.
+
+```bash
+# GigaVUE-FM
+az vm image terms accept --publisher gigamon-inc --offer gigamon-gigavue-cloud-suite-v2 --plan gfm-azure-v61300
+
+# UCT-V Controller
+az vm image terms accept --publisher gigamon-inc --offer gigamon-gigavue-cloud-suite-v2 --plan uctv-cntlr-v61300
+
+# vSeries Node
+az vm image terms accept --publisher gigamon-inc --offer gigamon-gigavue-cloud-suite-v2 --plan vseries-node-v61300
+```
+
+### 2. Initialize and Deploy
 Run the standard Terraform workflow:
 
 ```bash
 terraform init
 terraform plan -out=tfplan
 terraform apply tfplan
+
+**Note**: When you run `terraform apply`, the deployment will display the Gigamon version and pause for 10 seconds. This is a safety check allowing you to abort (`Ctrl+C`) if the version is incorrect.
 ```
 
 ### 2. Post-Deployment Configuration (CRITICAL)
@@ -155,6 +191,7 @@ The deployment creates the infrastructure, but GigaVUE-FM requires manual initia
     *   Login with default credentials: `admin` / `admin123A!!`
     *   **Uncheck** "SSH Key-Based Authentication" if prompted.
     *   **Change the Password** when prompted.
+    *   **Note**: If you skip this step, all API calls (including Swagger "Try it out") will fail and return an **HTML login/password change page** instead of JSON.
 
 #### 2b. Generate an FM API Token
 This lab uses a long-lived FM API token (JWT) for:
@@ -170,7 +207,7 @@ You only need to generate the token once per deployment.
     *   **Name**: `Lab_Token` (or any name)
     *   **Expiry**: `105` days (maximum)
     *   **User Group**: `Super Admin Group`
-4.  Click **OK** — the token is shown **once only**. Copy it immediately.
+4.  Click **OK** — After creating the token, tick the tickbox next to it and then click **Copy**. The token is **not displayed on screen** but is automatically copied to your clipboard. Paste it immediately into a text file or directly into the Azure Key Vault command in the next step.
 
 #### 2c. Upload the FM API Token to Azure Key Vault (Recommended)
 This lab creates an Azure Key Vault and assigns **managed identities** to the UCT-V, vSeries, and prod VMs so they can fetch the token securely at boot.

@@ -46,20 +46,20 @@ def main():
     success = False
     try:
         # 1. Terraform Init
-        if not run_command(["terraform", "init"], "1/5: Initialize Terraform"):
+        if not run_command(["terraform", "init"], "1/6: Initialize Terraform"):
             raise Exception("Terraform init failed")
 
         # 2. Terraform Plan
-        if not run_command(["terraform", "plan", "-out=tfplan"], "2/5: Plan Terraform"):
+        if not run_command(["terraform", "plan", "-out=tfplan"], "2/6: Plan Terraform"):
              raise Exception("Terraform plan failed")
 
         # 3. Terraform Apply
-        if not run_command(["terraform", "apply", "tfplan"], "3/5: Apply Terraform"):
+        if not run_command(["terraform", "apply", "tfplan"], "3/6: Apply Terraform"):
              raise Exception("Terraform apply failed")
 
         # 4. Set up Python Environment
         venv_path = os.path.join(".", "scripts", ".venv")
-        print(f"\n\033[93m>>> 4/5: Setting up Python virtual environment in {venv_path}...\033[0m")
+        print(f"\n\033[93m>>> 4/6: Setting up Python virtual environment in {venv_path}...\033[0m")
         if not os.path.exists(venv_path):
             if not run_command([sys.executable, "-m", "venv", venv_path], "Create venv"):
                 raise Exception("Failed to create virtual environment")
@@ -81,8 +81,13 @@ def main():
         if not os.path.exists(script_file):
              raise Exception(f"{script_file} was not found. Did terraform generate it?")
         
-        if not run_command([python_exe, script_file], "5/5: Run configure_lab.py"):
+        if not run_command([python_exe, script_file], "5/6: Run configure_lab.py"):
             raise Exception("configure_lab.py script failed")
+
+        # 6. Run status check
+        if not run_command([python_exe, script_file, "--status"], "6/6: Run Post-Deployment Status Check"):
+            # Don't fail the whole build, just warn the user.
+            print("\033[93mWarning: Status check reported issues. The lab might be partially functional.\033[0m")
 
         success = True
 

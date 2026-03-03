@@ -2,6 +2,19 @@
 # These are separated from main.tf to keep it more readable
 
 locals {
+  # Gigamon version configuration
+  # These locals derive the correct image SKU and version strings from the `gigamon_version` variable.
+  gigamon_version_sku_code = replace(var.gigamon_version, ".", "") # e.g., "6.13" -> "613"
+
+  fm_image_sku      = "gfm-azure-v${local.gigamon_version_sku_code}00"
+  fm_image_version  = "${var.gigamon_version}.00" # NOTE: This was 6.12.1099. Using .00 as a default for the new version.
+
+  uctv_image_sku    = "uctv-cntlr-v${local.gigamon_version_sku_code}00"
+  uctv_image_version = "${var.gigamon_version}.00"
+
+  vseries_image_sku = "vseries-node-v${local.gigamon_version_sku_code}00"
+  vseries_image_version = "${var.gigamon_version}.00"
+
   # Ubuntu image configuration
   ubuntu_publisher = "Canonical"
   ubuntu_offer     = var.ubuntu_version == "24.04" ? "ubuntu-24_04-lts" : "ubuntu-22_04-lts"
@@ -14,7 +27,7 @@ locals {
     #cloud-config
     packages: []
     runcmd:
-      - echo "GigaVUE-FM 6.12 initializing..."
+      - echo "GigaVUE-FM ${var.gigamon_version} initializing..."
   EOF
 
   # UCT-V Controller Cloud-Init
@@ -38,7 +51,7 @@ locals {
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.fm.public_ip}
+            remoteAddress: fm.connolly.lab
             remotePort: 443
 
       - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
@@ -276,7 +289,7 @@ PY
       # Add local firewall exception for VXLAN UDP 4789 (no-op if ufw disabled)
       - ufw allow 4789/udp || true
       # Allow ingress from UCT-V Controller and FM (if needed for tool VM logic)
-      - ufw allow from ${module.uctv_controller.private_ip} || true
+      - ufw allow from uctv.connolly.lab || true
       - if [ -f /var/run/reboot-required ]; then reboot; fi
   EOF
 
@@ -300,7 +313,7 @@ PY
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.uctv_controller.private_ip}
+            remoteAddress: uctv.connolly.lab
             remotePort: 8892
 
       - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
@@ -425,7 +438,7 @@ PY
 
     runcmd:
       - echo "Downloading UCT-V agent from Public Blob Storage..."
-      - curl -L "https://connollystorageaccount.blob.core.windows.net/uctv-agents/gigamon-gigavue-uctv-6.12.00-amd64.deb" -o /tmp/uctv-agent.deb
+      - curl -L "${var.uctv_agent_base_url}/gigamon-gigavue-uctv-${local.uctv_image_version}-amd64.deb" -o /tmp/uctv-agent.deb
       - echo "Installing UCT-V agent..."
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
@@ -456,7 +469,7 @@ PY
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: ${module.uctv_controller.private_ip}
+            remoteAddress: uctv.connolly.lab
             remotePort: 8892
 
       - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
@@ -581,7 +594,7 @@ PY
 
     runcmd:
       - echo "Downloading UCT-V agent from Public Blob Storage..."
-      - curl -L "https://connollystorageaccount.blob.core.windows.net/uctv-agents/gigamon-gigavue-uctv-6.12.00-amd64.deb" -o /tmp/uctv-agent.deb
+      - curl -L "${var.uctv_agent_base_url}/gigamon-gigavue-uctv-${local.uctv_image_version}-amd64.deb" -o /tmp/uctv-agent.deb
       - echo "Installing UCT-V agent..."
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."

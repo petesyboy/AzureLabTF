@@ -93,72 +93,25 @@ variable "ubuntu_vm_size" {
 }
 
 # -----------------------------------------------------------------------------
-# Gigamon Image References (Azure Marketplace - 6.12)
+# Gigamon Image References (Azure Marketplace)
 # -----------------------------------------------------------------------------
 # These variables define the specific version of Gigamon software to deploy.
 # Ensure the subscription has accepted terms for these specific image URNs.
 
-# GigaVUE-FM
-variable "fm_image_publisher" {
+variable "gigamon_version" {
+  type        = string
+  description = "The major.minor version of the Gigamon Cloud Suite to deploy (e.g., '6.12', '6.13')."
+  default     = "6.13"
+}
+
+variable "gigamon_image_publisher" {
   type    = string
   default = "gigamon-inc"
 }
 
-variable "fm_image_offer" {
+variable "gigamon_image_offer" {
   type    = string
   default = "gigamon-gigavue-cloud-suite-v2"
-}
-
-variable "fm_image_sku" {
-  type    = string
-  default = "gfm-azure-v61200"
-}
-
-variable "fm_image_version" {
-  type    = string
-  default = "6.12.1099"
-}
-
-# UCT-V Controller
-variable "uctv_image_publisher" {
-  type    = string
-  default = "gigamon-inc"
-}
-
-variable "uctv_image_offer" {
-  type    = string
-  default = "gigamon-gigavue-cloud-suite-v2"
-}
-
-variable "uctv_image_sku" {
-  type    = string
-  default = "uctv-cntlr-v61200"
-}
-
-variable "uctv_image_version" {
-  type    = string
-  default = "6.12.00"
-}
-
-# vSeries Node
-variable "vseries_image_publisher" {
-  type    = string
-  default = "gigamon-inc"
-}
-
-variable "vseries_image_offer" {
-  type    = string
-  default = "gigamon-gigavue-cloud-suite-v2"
-}
-
-variable "vseries_image_sku" {
-  type    = string
-  default = "vseries-node-v61200"
-}
-
-variable "vseries_image_version" {
-  type    = string
-  default = "6.12.00"
 }
 
 # -----------------------------------------------------------------------------
@@ -170,4 +123,10 @@ variable "fm_token_secret_name" {
   type        = string
   description = "Azure Key Vault secret name that will hold the GigaVUE-FM API token (JWT)."
   default     = "gigamon-fm-token"
+}
+
+variable "uctv_agent_base_url" {
+  type        = string
+  description = "The base URL for the UCT-V agent Debian package location (Blob Storage container)."
+  default     = "https://connollystorageaccount.blob.core.windows.net/uctv-agents"
 }

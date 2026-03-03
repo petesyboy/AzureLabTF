@@ -32,6 +32,10 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.3"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.9"
+    }
   }
 }
 
@@ -49,6 +53,36 @@ provider "azurerm" {
 }
 
 ############################################################
+# Pre-flight Version Check
+############################################################
+
+# This resource provides a brief pause to allow the user to verify the
+# Gigamon version before proceeding with the deployment.
+resource "null_resource" "version_check" {
+  triggers = {
+    version = var.gigamon_version
+  }
+  # This provisioner runs on the machine executing Terraform.
+  provisioner "local-exec" {
+    command = <<EOT
+      echo "======================================================================"
+      echo "== WARNING: You are about to deploy Gigamon Cloud Suite version ${var.gigamon_version}. =="
+      echo "==                                                                  =="
+      echo "== You have 10 seconds to press Ctrl+C to abort the deployment.     =="
+      echo "======================================================================"
+    EOT
+  }
+}
+
+resource "time_sleep" "version_check_pause" {
+  depends_on      = [null_resource.version_check]
+  create_duration = "10s"
+  triggers = {
+    version = var.gigamon_version
+  }
+}
+
+############################################################
 # Resource Group
 ############################################################
 
@@ -57,14 +91,17 @@ provider "azurerm" {
 # SSH key generation is defined in keys.tf
 
 resource "azurerm_resource_group" "rg" {
+  depends_on = [time_sleep.version_check_pause]
+
   name     = var.project_name # Example: "connolly-transitory-demo-tf-3po"
   location = var.location     # Example: "uksouth"
 
   tags = {
-    Environment = "demo"
-    Owner       = "gigamon-terraform"
-    owner       = var.gigamon_email
-    Project     = var.project_name # Tag resources with the project name for cost tracking/management.
+    Environment    = "demo"
+    Owner          = "gigamon-terraform"
+    owner          = var.gigamon_email
+    Project        = var.project_name # Tag resources with the project name for cost tracking/management.
+    DeploymentType = "connolly-demo"
   }
 }
 
@@ -95,10 +132,11 @@ resource "azurerm_key_vault" "fm_token_kv" {
   public_network_access_enabled = true
 
   tags = {
-    Environment = "demo"
-    Owner       = "gigamon-terraform"
-    owner       = var.gigamon_email
-    Project     = var.project_name
+    Environment    = "demo"
+    Owner          = "gigamon-terraform"
+    owner          = var.gigamon_email
+    Project        = var.project_name
+    DeploymentType = "connolly-demo"
   }
 }
 
@@ -144,19 +182,20 @@ module "networking" {
 module "fm" {
   source = "./modules/gigamon-vm"
 
-  vm_name             = "fm-612"
+  vm_name             = "connolly-fm-${replace(var.gigamon_version, ".", "")}"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+  dns_label           = "connolly-fm-${replace(var.gigamon_version, ".", "")}-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.fm_vm_size                         # Configurable VM size (e.g., Standard_D4s_v5)
   admin_username      = var.admin_username
   ssh_public_key      = tls_private_key.lab_key.public_key_openssh
-  image_publisher     = var.fm_image_publisher
-  image_offer         = var.fm_image_offer
-  image_sku           = var.fm_image_sku
-  image_version       = var.fm_image_version
+  image_publisher     = var.gigamon_image_publisher
+  image_offer         = var.gigamon_image_offer
+  image_sku           = local.fm_image_sku
+  image_version       = local.fm_image_version
   custom_data         = base64encode(local.fm_cloud_init)
-  os_disk_name        = "osdisk-fm-612"
+  os_disk_name        = "osdisk-fm-${replace(var.gigamon_version, ".", "")}"
   pip_name            = "pip-fm" # Public IP for FM access
   nic_name            = "nic-fm"
   ip_config_name      = "ipconfig-fm"
@@ -177,17 +216,18 @@ module "fm" {
 module "uctv_controller" {
   source = "./modules/gigamon-vm"
 
-  vm_name             = "uctv-controller"
+  vm_name             = "connolly-uctv-controller"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+  dns_label           = "connolly-uctv-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.uctv_vm_size
   admin_username      = var.admin_username
   ssh_public_key      = tls_private_key.lab_key.public_key_openssh
-  image_publisher     = var.uctv_image_publisher
-  image_offer         = var.uctv_image_offer
-  image_sku           = var.uctv_image_sku
-  image_version       = var.uctv_image_version
+  image_publisher     = var.gigamon_image_publisher
+  image_offer         = var.gigamon_image_offer
+  image_sku           = local.uctv_image_sku
+  image_version       = local.uctv_image_version
   custom_data         = base64encode(local.uctv_cloud_init)
   os_disk_name        = "osdisk-uctv"
   pip_name            = "pip-uctv"
@@ -210,17 +250,18 @@ module "uctv_controller" {
 module "vseries" {
   source = "./modules/gigamon-vm"
 
-  vm_name             = "vseries-node"
+  vm_name             = "connolly-vseries-node"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+  dns_label           = "connolly-vseries-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.vseries_vm_size
   admin_username      = var.admin_username
   ssh_public_key      = tls_private_key.lab_key.public_key_openssh
-  image_publisher     = var.vseries_image_publisher
-  image_offer         = var.vseries_image_offer
-  image_sku           = var.vseries_image_sku
-  image_version       = var.vseries_image_version
+  image_publisher     = var.gigamon_image_publisher
+  image_offer         = var.gigamon_image_offer
+  image_sku           = local.vseries_image_sku
+  image_version       = local.vseries_image_version
   custom_data         = base64encode(local.vseries_cloud_init)
   os_disk_name        = "osdisk-vseries"
   pip_name            = "pip-vseries"
@@ -255,9 +296,10 @@ module "vseries" {
 module "tool_vm" {
   source = "./modules/linux-vm"
 
-  vm_name             = "tool-vm"
+  vm_name             = "connolly-tool-vm"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+  dns_label           = "connolly-tool-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.ubuntu_vm_size
   admin_username      = var.admin_username
@@ -281,9 +323,10 @@ module "prod1" {
 
   depends_on = [module.uctv_controller]
 
-  vm_name             = "prod-ubuntu-1"
+  vm_name             = "connolly-prod-ubuntu-1"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+  dns_label           = "connolly-prod1-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.production_subnet_id # Deployed in Production Subnet
   vm_size             = var.ubuntu_vm_size
   admin_username      = var.admin_username
@@ -307,9 +350,10 @@ module "prod2" {
 
   depends_on = [module.uctv_controller]
 
-  vm_name             = "prod-ubuntu-2"
+  vm_name             = "connolly-prod-ubuntu-2"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+  dns_label           = "connolly-prod2-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.production_subnet_id # Deployed in Production Subnet
   vm_size             = var.ubuntu_vm_size
   admin_username      = var.admin_username
@@ -359,14 +403,16 @@ resource "azurerm_role_assignment" "kv_secrets_user_prod2" {
 resource "local_file" "configure_script" {
   filename = "${path.module}/scripts/configure_lab.py"
   content = templatefile("${path.module}/scripts/configure_lab.py.tftpl", {
-    fm_ip                = module.fm.public_ip
+    fm_fqdn              = "connolly-fm-${replace(var.gigamon_version, ".", "")}-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
     fm_group             = var.fm_group_name
     fm_subgroup          = var.fm_subgroup_name
     key_vault_name       = azurerm_key_vault.fm_token_kv.name
     fm_token_secret_name = var.fm_token_secret_name
-    vseries_ip           = module.vseries.public_ip
-    uctv_controller_ip   = module.uctv_controller.public_ip
-    prod1_ip             = module.prod1.public_ip
-    prod2_ip             = module.prod2.public_ip
+    vseries_fqdn         = "connolly-vseries-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
+    uctv_controller_fqdn = "connolly-uctv-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
+    prod1_fqdn           = "connolly-prod1-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
+    prod2_fqdn           = "connolly-prod2-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
+    fm_internal_name     = "fm.connolly.lab"
+    uctv_internal_name   = "uctv.connolly.lab"
   })
 }
