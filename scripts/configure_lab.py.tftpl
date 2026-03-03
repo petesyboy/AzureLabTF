@@ -6,6 +6,7 @@ import urllib3
 import os
 import subprocess
 import shutil
+import argparse
 
 # Suppress insecure request warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -25,6 +26,7 @@ PROD1_FQDN = "${prod1_fqdn}"
 PROD2_FQDN = "${prod2_fqdn}"
 FM_INTERNAL = "${fm_internal_name}"
 UCTV_INTERNAL = "${uctv_internal_name}"
+ADMIN_USER = "${admin_username}"
 
 # Azure Key Vault (optional convenience for local script)
 # If you uploaded the FM token to Key Vault, this script can read it using Azure CLI.
@@ -39,13 +41,24 @@ FM_TOKEN = ""
 # Built at runtime after token is obtained
 AUTH_HEADERS = {}
 
+# Resolve SSH Key Path (check current dir and parent dir)
+def get_key_path():
+    potential_paths = ["./lab_key.pem", "../lab_key.pem"]
+    for path in potential_paths:
+        if os.path.exists(path):
+            return path
+    return "./lab_key.pem" # Fallback
+
+KEY_FILE = get_key_path()
+
 def check_fm_accessible():
     """Checks if FM API is reachable and ready."""
     url = f"{FM_URL}/api/v1.3/user" 
     print(f"Waiting for FM API to become ready (this can take 5-10 minutes after boot)...")
     print(f"Checking URL: {url} for a valid JSON API response")
     
-    max_retries = 60
+    # Increase retries to 90 (15 minutes) to account for slower FM initialization
+    max_retries = 90
     for i in range(max_retries):
         try:
             # Send a request with dummy auth. If the API is up, it will return a 401/403 with JSON.
@@ -57,6 +70,9 @@ def check_fm_accessible():
                 print("\nFM API is ready!")
                 return True
             else:
+                # If we get a response but it's not JSON, it's likely the password change redirect
+                if i > 3 and i % 6 == 0:
+                    print(f"\n[HINT] FM is responding but API is not ready. Have you changed the admin password at https://{FM_FQDN} yet?")
                 sys.stdout.write(".")
                 sys.stdout.flush()
         except requests.exceptions.RequestException:
@@ -277,12 +293,12 @@ def push_uctv_config(token):
 """
     
     ssh_cmd = [
-        "ssh", "-i", "./lab_key.pem", "-o", "StrictHostKeyChecking=no",
-        f"peter@{UCTV_CONTROLLER_FQDN}",
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
+        f"{ADMIN_USER}@{UCTV_CONTROLLER_FQDN}",
         "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart uctv-cntlr'"
     ]
     
-    print(f"  Attempting SSH connection to peter@{UCTV_CONTROLLER_FQDN}...")
+    print(f"  Attempting SSH connection to {ADMIN_USER}@{UCTV_CONTROLLER_FQDN}...")
     try:
         process = subprocess.run(
             ssh_cmd, 
@@ -320,12 +336,12 @@ def push_vseries_config(token):
     
     # Run SSH natively and pass the config via stdin to avoid quoting issues
     ssh_cmd = [
-        "ssh", "-i", "./lab_key.pem", "-o", "StrictHostKeyChecking=no",
-        f"peter@{VSERIES_FQDN}",
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
+        f"{ADMIN_USER}@{VSERIES_FQDN}",
         "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart vseries-node'"
     ]
     
-    print(f"  Attempting SSH connection to peter@{VSERIES_FQDN}...")
+    print(f"  Attempting SSH connection to {ADMIN_USER}@{VSERIES_FQDN}...")
     try:
         process = subprocess.run(
             ssh_cmd, 
@@ -353,8 +369,8 @@ def restart_ubuntu_agents():
             continue
         print(f"Restarting uctv agent daemon on {name} ({fqdn})...")
         ssh_cmd = [
-            "ssh", "-i", "./lab_key.pem", "-o", "StrictHostKeyChecking=no",
-            f"peter@{fqdn}",
+            "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
+            f"{ADMIN_USER}@{fqdn}",
             "sudo systemctl restart uctv"
         ]
         try:
@@ -363,7 +379,69 @@ def restart_ubuntu_agents():
         except Exception as e:
             print(f"  [WARNING] Could not restart agent on {name}. It may restart automatically later via timer.")
 
+def check_service_status(fqdn, service_name, user=ADMIN_USER):
+    """Checks if a systemd service is active on a remote VM via SSH."""
+    if not fqdn:
+        return "SKIPPED"
+    
+    cmd = [
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+        f"{user}@{fqdn}",
+        f"systemctl is-active {service_name}"
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        status = result.stdout.strip()
+        if result.returncode == 0 and status == "active":
+            return "UP"
+        return f"DOWN ({status})" if status else "DOWN"
+    except Exception:
+        return "UNREACHABLE"
+
+def check_lab_status():
+    """Performs a quick health check of the lab environment."""
+    print("\n" + "="*60)
+    print("   Azure Lab Status Check")
+    print("="*60)
+    
+    # 1. FM Status
+    print(f"[-] GigaVUE-FM ({FM_FQDN}): ".ljust(40), end="", flush=True)
+    try:
+        # Just check if API responds (even 401 is fine, means it's up)
+        resp = requests.get(f"{FM_URL}/api/v1.3/user", verify=False, timeout=3, auth=("dummy", "dummy"))
+        if resp.status_code in [200, 401, 403]:
+             print("UP (API Ready)")
+        else:
+             print(f"DOWN (HTTP {resp.status_code})")
+    except Exception:
+        print("UNREACHABLE")
+
+    # 2. UCT-V Controller
+    print(f"[-] UCT-V Controller ({UCTV_CONTROLLER_FQDN}): ".ljust(40), end="", flush=True)
+    print(check_service_status(UCTV_CONTROLLER_FQDN, "uctv-cntlr"))
+
+    # 3. vSeries Node
+    print(f"[-] vSeries Node ({VSERIES_FQDN}): ".ljust(40), end="", flush=True)
+    print(check_service_status(VSERIES_FQDN, "vseries-node"))
+
+    # 4. Prod VMs
+    print(f"[-] Prod VM 1 ({PROD1_FQDN}): ".ljust(40), end="", flush=True)
+    print(check_service_status(PROD1_FQDN, "uctv"))
+    
+    print(f"[-] Prod VM 2 ({PROD2_FQDN}): ".ljust(40), end="", flush=True)
+    print(check_service_status(PROD2_FQDN, "uctv"))
+    print("="*60 + "\n")
+
 def main():
+    parser = argparse.ArgumentParser(description="Configure Gigamon Lab")
+    parser.add_argument("--status", action="store_true", help="Run health check only")
+    args = parser.parse_args()
+
+    if args.status:
+        check_lab_status()
+        return
+
     print("---------------------------------------------------------")
     print("   Gigamon V Series - FM API Configuration")
     print("---------------------------------------------------------")
@@ -372,21 +450,9 @@ def main():
         print("FM is not reachable. Is the VM running?")
         sys.exit(1)
 
-    print("\n" + "="*60)
-    print("ACTION REQUIRED: Generate and Upload FM API Token")
-    print("="*60)
-    print(f"1. Log into GigaVUE-FM at {FM_URL}")
-    print("   (User: admin, Password: <your_password>)")
-    print("2. Go to Administration > User Management > Tokens > Current User Tokens")
-    print("3. Click 'New Token', set expiry to max (105 days), and click OK.")
-    print("4. After creating the token, tick the tickbox next to it and then click 'Copy'. The token is NOT displayed on screen but is automatically copied to your clipboard.")
-    print("5. Run the following command in a separate terminal to upload it to Azure Key Vault:")
-    print(f"\n   az keyvault secret set --vault-name \"{KEY_VAULT_NAME}\" --name \"{FM_TOKEN_SECRET_NAME}\" --value \"<PASTE_TOKEN_HERE>\"\n")
-
-    input("Once you have uploaded the token, press Enter to continue...")
-
-    # 1. Get FM API token (prompts if not hardcoded)
-    agent_token = get_auth_token()
+    # 1. Get FM API token (from Key Vault via Azure CLI)
+    # Note: Instructions for uploading the token are provided by the lab-deploy.py wrapper.
+    agent_token = FM_TOKEN if FM_TOKEN else get_auth_token()
 
     # Build auth headers from the token
     global AUTH_HEADERS

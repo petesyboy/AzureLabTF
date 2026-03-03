@@ -185,7 +185,6 @@ module "fm" {
   vm_name             = "connolly-fm-${replace(var.gigamon_version, ".", "")}"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  dns_label           = "connolly-fm-${replace(var.gigamon_version, ".", "")}-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.fm_vm_size                         # Configurable VM size (e.g., Standard_D4s_v5)
   admin_username      = var.admin_username
@@ -219,7 +218,6 @@ module "uctv_controller" {
   vm_name             = "connolly-uctv-controller"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  dns_label           = "connolly-uctv-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.uctv_vm_size
   admin_username      = var.admin_username
@@ -253,7 +251,6 @@ module "vseries" {
   vm_name             = "connolly-vseries-node"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  dns_label           = "connolly-vseries-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.vseries_vm_size
   admin_username      = var.admin_username
@@ -299,7 +296,6 @@ module "tool_vm" {
   vm_name             = "connolly-tool-vm"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  dns_label           = "connolly-tool-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.visibility_subnet_id # Deployed in Visibility Subnet
   vm_size             = var.ubuntu_vm_size
   admin_username      = var.admin_username
@@ -326,7 +322,6 @@ module "prod1" {
   vm_name             = "connolly-prod-ubuntu-1"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  dns_label           = "connolly-prod1-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.production_subnet_id # Deployed in Production Subnet
   vm_size             = var.ubuntu_vm_size
   admin_username      = var.admin_username
@@ -353,7 +348,6 @@ module "prod2" {
   vm_name             = "connolly-prod-ubuntu-2"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  dns_label           = "connolly-prod2-${random_string.kv_suffix.result}"
   subnet_id           = module.networking.production_subnet_id # Deployed in Production Subnet
   vm_size             = var.ubuntu_vm_size
   admin_username      = var.admin_username
@@ -403,16 +397,17 @@ resource "azurerm_role_assignment" "kv_secrets_user_prod2" {
 resource "local_file" "configure_script" {
   filename = "${path.module}/scripts/configure_lab.py"
   content = templatefile("${path.module}/scripts/configure_lab.py.tftpl", {
-    fm_fqdn              = "connolly-fm-${replace(var.gigamon_version, ".", "")}-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
+    fm_fqdn              = module.fm.public_ip # Used by local script for API calls
     fm_group             = var.fm_group_name
     fm_subgroup          = var.fm_subgroup_name
     key_vault_name       = azurerm_key_vault.fm_token_kv.name
     fm_token_secret_name = var.fm_token_secret_name
-    vseries_fqdn         = "connolly-vseries-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
-    uctv_controller_fqdn = "connolly-uctv-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
-    prod1_fqdn           = "connolly-prod1-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
-    prod2_fqdn           = "connolly-prod2-${random_string.kv_suffix.result}.${var.location}.cloudapp.azure.com"
-    fm_internal_name     = "fm.connolly.lab"
-    uctv_internal_name   = "uctv.connolly.lab"
+    vseries_fqdn         = module.vseries.public_ip # Used for SSH config push
+    uctv_controller_fqdn = module.uctv_controller.public_ip # Used for SSH config push
+    prod1_fqdn           = module.prod1.public_ip # Used for SSH agent restart
+    prod2_fqdn           = module.prod2.public_ip # Used for SSH agent restart
+    fm_internal_name     = module.fm.private_ip # Used by agents to find FM
+    uctv_internal_name   = module.uctv_controller.private_ip # Used for internal comms
+    admin_username       = var.admin_username
   })
 }
