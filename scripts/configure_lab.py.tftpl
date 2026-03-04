@@ -279,6 +279,26 @@ def create_anycloud_connection(domain_id, connection_alias):
     except Exception as e:
         print(f"Error creating connection: {e}")
 
+def run_ssh_cmd(fqdn, command, input_data=None, step_name="SSH Command"):
+    """Helper to run remote commands via SSH with consistent error handling."""
+    ssh_cmd = [
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+        f"{ADMIN_USER}@{fqdn}", command
+    ]
+    try:
+        process = subprocess.run(
+            ssh_cmd, input=input_data, text=True, capture_output=True, check=True
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] {step_name} failed on {fqdn}.")
+        if e.stderr:
+            print(f"  Details: {e.stderr.strip()}")
+        return False
+    except Exception as e:
+        print(f"  [ERROR] Unexpected error during SSH to {fqdn}: {e}")
+        return False
+
 def push_uctv_config(token):
     """Pushes the registration token and config to the UCTV Controller via SSH."""
     if not UCTV_CONTROLLER_FQDN:
@@ -295,31 +315,9 @@ def push_uctv_config(token):
   remotePort: 443
 """
     
-    ssh_cmd = [
-        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
-        f"{ADMIN_USER}@{UCTV_CONTROLLER_FQDN}",
-        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart uctv-cntlr'"
-    ]
-    
-    print(f"  Attempting SSH connection to {ADMIN_USER}@{UCTV_CONTROLLER_FQDN}...")
-    try:
-        process = subprocess.run(
-            ssh_cmd, 
-            input=config_content, 
-            text=True, 
-            capture_output=True,
-            check=True
-        )
-        print("  [SUCCESS] Successfully wrote /etc/gigamon-cloud.conf and restarted uctv-cntlr service.")
-    except FileNotFoundError:
-        print("  [ERROR] 'ssh' command not found on PATH. Ensure SSH client is installed and accessible.")
-    except subprocess.CalledProcessError as e:
-        print(f"  [ERROR] Failed to push config via SSH.")
-        print(f"  Ensure 'lab_key.pem' is in the current directory.")
-        if e.stderr:
-            print(f"  SSH Error: {e.stderr.strip()}")
-    except Exception as e:
-        print(f"  [ERROR] Unhandled exception during SSH: {e}")
+    cmd = "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart uctv-cntlr'"
+    if run_ssh_cmd(UCTV_CONTROLLER_FQDN, cmd, input_data=config_content, step_name="Push UCTV Config"):
+        print("  [SUCCESS] Config pushed and service restarted.")
 
 def push_vseries_config(token):
     """Pushes the registration token and config to the vSeries node via SSH."""

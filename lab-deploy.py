@@ -157,19 +157,10 @@ def main():
         # Upload UCTV Files to Azure Storage
         try:
             print("\n\033[93m>>> Checking for UCTV files and Storage Account...\033[0m")
-            
-            # 1. Determine Storage Account Name
-            proc_sa = subprocess.run(["terraform", "output", "-raw", "storage_account_name"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            sa_name = proc_sa.stdout.strip() if proc_sa.returncode == 0 else None
-            
-            if not sa_name:
-                print("\033[93mNo Storage Account specified in Terraform outputs.\033[0m")
-                user_sa = input("Enter Storage Account name to use/create [default: connollyblobstorage]: ").strip()
-                sa_name = user_sa if user_sa else "connollyblobstorage"
-            
-            # 2. Determine Container Name
-            proc_sc = subprocess.run(["terraform", "output", "-raw", "storage_container_name"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            sa_container = proc_sc.stdout.strip() if proc_sc.returncode == 0 else "uctv-container"
+
+            # These should now always exist in TF output
+            sa_name = subprocess.check_output(["terraform", "output", "-raw", "storage_account_name"], text=True).strip()
+            sa_container = subprocess.check_output(["terraform", "output", "-raw", "storage_container_name"], text=True).strip()
             
             # 3. Check Local Files
             uctv_source_dir = os.path.join(".", "UCTV-files")

@@ -21,6 +21,72 @@ locals {
   ubuntu_sku       = "server"
   ubuntu_version   = "latest"
 
+  # Common script to fetch FM token from Key Vault using Managed Identity
+  token_fetch_script = <<-EOF
+    #!/usr/bin/env bash
+    set -euo pipefail
+    CONF="/etc/gigamon-cloud.conf"
+    KV_NAME="${azurerm_key_vault.fm_token_kv.name}"
+    SECRET_NAME="${var.fm_token_secret_name}"
+    KV_API_VERSION="7.4"
+    if [[ ! -f "$CONF" ]]; then exit 0; fi
+    if ! grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
+      systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+      exit 0
+    fi
+    MSI_JSON="$(curl -sS -H 'Metadata: true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' || true)"
+    ACCESS_TOKEN=""
+    if command -v jq >/dev/null 2>&1; then
+      ACCESS_TOKEN="$(echo "$MSI_JSON" | jq -r '.access_token // empty' || true)"
+    elif command -v python3 >/dev/null 2>&1; then
+      ACCESS_TOKEN="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))' <<<"$MSI_JSON")"
+    else
+      ACCESS_TOKEN="$(echo "$MSI_JSON" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    fi
+    if [[ -z "$ACCESS_TOKEN" ]]; then
+      echo "No managed identity access token yet; will retry."
+      exit 0
+    fi
+    SECRET_URL="https://$${KV_NAME}.vault.azure.net/secrets/$${SECRET_NAME}?api-version=$${KV_API_VERSION}"
+    SECRET_JSON="$(curl -sS -H "Authorization: Bearer $${ACCESS_TOKEN}" "$SECRET_URL" || true)"
+    FM_TOKEN=""
+    if command -v jq >/dev/null 2>&1; then
+      FM_TOKEN="$(echo "$SECRET_JSON" | jq -r '.value // empty' || true)"
+    elif command -v python3 >/dev/null 2>&1; then
+      FM_TOKEN="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("value",""))' <<<"$SECRET_JSON")"
+    else
+      FM_TOKEN="$(echo "$SECRET_JSON" | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    fi
+    if [[ -z "$FM_TOKEN" ]]; then
+      echo "Secret not available yet; will retry."
+      exit 0
+    fi
+    sed -i "s|^\\([[:space:]]*token:\\).*|\\1 $${FM_TOKEN}|" "$CONF"
+    systemctl start gigamon-agent-refresh.service >/dev/null 2>&1 || true
+    systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+  EOF
+
+  # Common script to restart services when config changes
+  agent_refresh_script = <<-EOF
+    #!/usr/bin/env bash
+    set -euo pipefail
+    CONF="/etc/gigamon-cloud.conf"
+    # Determine service name based on what is installed
+    if systemctl list-unit-files | grep -q "vseries-node.service"; then
+      SERVICE="vseries-node"
+    elif systemctl list-unit-files | grep -q "uctv.service"; then
+      SERVICE="uctv"
+    else
+      exit 0
+    fi
+    if [[ ! -f "$CONF" ]]; then exit 0; fi
+    if grep -q "PLACE_HOLDER_TOKEN" "$CONF"; then
+      echo "Placeholder token still present; skipping restart."
+      exit 0
+    fi
+    systemctl restart "$SERVICE"
+  EOF
+
   # FM Cloud-Init: Minimal init.
   # Configuration is handled post-deployment via API.
   fm_cloud_init = <<-EOF
@@ -57,80 +123,7 @@ locals {
       - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
         permissions: '0755'
         owner: root:root
-        content: |
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          CONF="/etc/gigamon-cloud.conf"
-          KV_NAME="${azurerm_key_vault.fm_token_kv.name}"
-          SECRET_NAME="${var.fm_token_secret_name}"
-          KV_API_VERSION="7.4"
-
-          if [[ ! -f "$CONF" ]]; then
-            exit 0
-          fi
-
-          if ! grep -q "PLACEHOLDER_TOKEN" "$CONF"; then
-            systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
-            exit 0
-          fi
-
-          if ! command -v curl >/dev/null 2>&1; then
-            echo "curl not found; cannot fetch Key Vault secret."
-            exit 0
-          fi
-
-          MSI_JSON="$(curl -sS -H 'Metadata: true' \
-            'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' || true)"
-
-          ACCESS_TOKEN=""
-          if command -v jq >/dev/null 2>&1; then
-            ACCESS_TOKEN="$(echo "$MSI_JSON" | jq -r '.access_token // empty' || true)"
-          elif command -v python3 >/dev/null 2>&1; then
-            ACCESS_TOKEN="$(python3 - <<'PY' 2>/dev/null || true
-import json,sys
-try:
-  print(json.load(sys.stdin).get("access_token",""))
-except Exception:
-  print("")
-PY
-<<<"$MSI_JSON")"
-          else
-            ACCESS_TOKEN="$(echo "$MSI_JSON" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-          fi
-
-          if [[ -z "$ACCESS_TOKEN" ]]; then
-            echo "No managed identity access token yet (RBAC propagation?); will retry."
-            exit 0
-          fi
-
-          SECRET_URL="https://$${KV_NAME}.vault.azure.net/secrets/$${SECRET_NAME}?api-version=$${KV_API_VERSION}"
-          SECRET_JSON="$(curl -sS -H "Authorization: Bearer $${ACCESS_TOKEN}" "$SECRET_URL" || true)"
-
-          FM_TOKEN=""
-          if command -v jq >/dev/null 2>&1; then
-            FM_TOKEN="$(echo "$SECRET_JSON" | jq -r '.value // empty' || true)"
-          elif command -v python3 >/dev/null 2>&1; then
-            FM_TOKEN="$(python3 - <<'PY' 2>/dev/null || true
-import json,sys
-try:
-  print(json.load(sys.stdin).get("value",""))
-except Exception:
-  print("")
-PY
-<<<"$SECRET_JSON")"
-          else
-            FM_TOKEN="$(echo "$SECRET_JSON" | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-          fi
-
-          if [[ -z "$FM_TOKEN" ]]; then
-            echo "Secret not available yet (or access denied); will retry."
-            exit 0
-          fi
-
-          sed -i "s|^\\([[:space:]]*token:\\).*|\\1 $${FM_TOKEN}|" "$CONF"
-          systemctl start gigamon-agent-refresh.service >/dev/null 2>&1 || true
-          systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
+        content: ${jsonencode(local.token_fetch_script)}
 
       - path: /etc/systemd/system/fm-token-fetch.service
         permissions: '0644'
