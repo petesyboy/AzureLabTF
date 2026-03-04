@@ -53,36 +53,6 @@ provider "azurerm" {
 }
 
 ############################################################
-# Pre-flight Version Check
-############################################################
-
-# This resource provides a brief pause to allow the user to verify the
-# Gigamon version before proceeding with the deployment.
-resource "null_resource" "version_check" {
-  triggers = {
-    version = var.gigamon_version
-  }
-  # This provisioner runs on the machine executing Terraform.
-  provisioner "local-exec" {
-    command = <<EOT
-      echo "======================================================================"
-      echo "== WARNING: You are about to deploy Gigamon Cloud Suite version ${var.gigamon_version}. =="
-      echo "==                                                                  =="
-      echo "== You have 10 seconds to press Ctrl+C to abort the deployment.     =="
-      echo "======================================================================"
-    EOT
-  }
-}
-
-resource "time_sleep" "version_check_pause" {
-  depends_on      = [null_resource.version_check]
-  create_duration = "10s"
-  triggers = {
-    version = var.gigamon_version
-  }
-}
-
-############################################################
 # Resource Group
 ############################################################
 
@@ -91,8 +61,6 @@ resource "time_sleep" "version_check_pause" {
 # SSH key generation is defined in keys.tf
 
 resource "azurerm_resource_group" "rg" {
-  depends_on = [time_sleep.version_check_pause]
-
   name     = var.project_name # Example: "connolly-transitory-demo-tf-3po"
   location = var.location     # Example: "uksouth"
 
@@ -146,6 +114,24 @@ resource "azurerm_role_assignment" "kv_secrets_officer_current_user" {
   scope                = azurerm_key_vault.fm_token_kv.id
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = data.azurerm_client_config.current.object_id
+}
+
+############################################################
+# Storage Account for UCTV Agents
+############################################################
+
+resource "azurerm_storage_account" "lab_sa" {
+  name                     = "connollysa${random_string.kv_suffix.result}"
+  resource_group_name      = azurerm_resource_group.rg.name
+  location                 = azurerm_resource_group.rg.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}
+
+resource "azurerm_storage_container" "uctv_container" {
+  name                  = "uctv-container"
+  storage_account_name  = azurerm_storage_account.lab_sa.name
+  container_access_type = "blob" # Public read access for blobs so VMs can curl without SAS
 }
 
 ############################################################

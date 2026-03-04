@@ -313,7 +313,7 @@ PY
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: uctv.connolly.lab
+            remoteAddress: ${module.uctv_controller.private_ip}
             remotePort: 8892
 
       - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
@@ -438,7 +438,7 @@ PY
 
     runcmd:
       - echo "Downloading UCT-V agent from Public Blob Storage..."
-      - curl -L "${var.uctv_agent_base_url}/gigamon-gigavue-uctv-${local.uctv_image_version}-amd64.deb" -o /tmp/uctv-agent.deb
+      - curl -L --retry 10 --retry-delay 10 --retry-connrefused "${azurerm_storage_account.lab_sa.primary_blob_endpoint}${azurerm_storage_container.uctv_container.name}/gigamon-gigavue-uctv-${local.uctv_image_version}-amd64.deb" -o /tmp/uctv-agent.deb
       - echo "Installing UCT-V agent..."
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."
@@ -469,7 +469,7 @@ PY
             groupName: ${var.fm_group_name}
             subGroupName: ${var.fm_subgroup_name}
             token: PLACEHOLDER_TOKEN
-            remoteAddress: uctv.connolly.lab
+            remoteAddress: ${module.uctv_controller.private_ip}
             remotePort: 8892
 
       - path: /usr/local/sbin/fetch-fm-token-from-keyvault.sh
@@ -594,7 +594,7 @@ PY
 
     runcmd:
       - echo "Downloading UCT-V agent from Public Blob Storage..."
-      - curl -L "${var.uctv_agent_base_url}/gigamon-gigavue-uctv-${local.uctv_image_version}-amd64.deb" -o /tmp/uctv-agent.deb
+      - curl -L --retry 10 --retry-delay 10 --retry-connrefused "${azurerm_storage_account.lab_sa.primary_blob_endpoint}${azurerm_storage_container.uctv_container.name}/gigamon-gigavue-uctv-${local.uctv_image_version}-amd64.deb" -o /tmp/uctv-agent.deb
       - echo "Installing UCT-V agent..."
       - dpkg -i /tmp/uctv-agent.deb || apt-get install -f -y
       - echo "UCT-V agent installed."

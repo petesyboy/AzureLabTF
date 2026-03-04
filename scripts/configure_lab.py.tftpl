@@ -92,9 +92,12 @@ def get_auth_token():
     print(f"Retrieving FM API Token from Azure Key Vault '{KEY_VAULT_NAME}' (Secret: '{FM_TOKEN_SECRET_NAME}')...")
 
     try:
+        # Fix for Windows: Resolve 'az' to 'az.cmd' or full path
+        az_cmd = shutil.which("az") or ("az.cmd" if os.name == 'nt' else "az")
+
         # Construct the Azure CLI command to get the secret
         cmd = [
-            "az", "keyvault", "secret", "show",
+            az_cmd, "keyvault", "secret", "show",
             "--vault-name", KEY_VAULT_NAME,
             "--name", FM_TOKEN_SECRET_NAME,
             "--query", "value",
@@ -391,11 +394,13 @@ def check_service_status(fqdn, service_name, user=ADMIN_USER):
     ]
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         status = result.stdout.strip()
         if result.returncode == 0 and status == "active":
             return "UP"
         return f"DOWN ({status})" if status else "DOWN"
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT"
     except Exception:
         return "UNREACHABLE"
 
