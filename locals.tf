@@ -232,7 +232,11 @@ locals {
 
           IFACE="eth0"
           VXLAN_IF="vxlan0"
-          VNI="123"
+          # NOTE: Your tcpdump showed 'li-id 0', which often maps to VNI 0.
+          # If you still see nothing on vxlan0, run:
+          # 'sudo tcpdump -ni eth0 -vvv port 4789' and look for the 'VNI' field.
+          # Also ensure 'Metadata' or 'GigaSMART Header' is DISABLED in FM.
+          VNI="0"
           DSTPORT="4789"
 
           # Get the IPv4 address on the underlying interface (CIDR)
@@ -242,7 +246,7 @@ locals {
 
           # Create vxlan0 if it doesn't exist
           if ! ip link show "$${VXLAN_IF}" >/dev/null 2>&1; then
-            ip link add "$${VXLAN_IF}" type vxlan id "$${VNI}" dev "$${IFACE}" dstport "$${DSTPORT}"
+            ip link add "$${VXLAN_IF}" type vxlan id "$${VNI}" dev "$${IFACE}" dstport "$${DSTPORT}" nolearning
           fi
 
           # Bring interface up
@@ -254,7 +258,7 @@ locals {
         owner: root:root
         content: |
           [Unit]
-          Description=Configure vxlan0 interface (VNI 123)
+          Description=Configure vxlan0 interface
           After=network-online.target
           Wants=network-online.target
 

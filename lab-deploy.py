@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+import json
 import subprocess
 import shutil
 from datetime import datetime, timedelta
@@ -42,6 +43,37 @@ def run_command(command, step_name):
         print(f"\033[91mFailed to execute {command[0]}: {e}\033[0m")
         return False
 
+def manage_vm_power_states(az_cmd, rg_name):
+    """Checks VM power states and offers to start them to avoid Terraform 409 conflicts."""
+    print(f"\n\033[93m>>> Checking VM power states in Resource Group '{rg_name}'...\033[0m")
+    try:
+        # Query Azure for VM names and their power state
+        cmd = [
+            az_cmd, "vm", "list", 
+            "-g", rg_name, 
+            "-d", 
+            "--query", "[].{name:name, state:powerState}", 
+            "-o", "json"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            return # RG likely doesn't exist yet
+            
+        vms = json.loads(result.stdout)
+        stopped_vms = [v['name'] for v in vms if v.get('state') and 'running' not in v['state'].lower()]
+        
+        if stopped_vms:
+            print(f"\033[93m[!] The following VMs are NOT running: {', '.join(stopped_vms)}\033[0m")
+            print("Terraform may fail with a 409 Conflict if it tries to modify deallocated VMs.")
+            if input("Would you like to power them on now? (y/n): ").lower() == 'y':
+                for vm in stopped_vms:
+                    print(f"Starting {vm}...")
+                    subprocess.run([az_cmd, "vm", "start", "-g", rg_name, "-n", vm, "--no-wait"], check=False)
+                print("\033[92m[SUCCESS] Start commands issued. Waiting 10s for Azure to process...\033[0m")
+                time.sleep(10)
+    except Exception as e:
+        print(f"\033[91mWarning: Could not verify VM status: {e}\033[0m")
+
 def main():
     start_time = datetime.now()
     print_header(f"Gigamon Azure Lab Deployment\n Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -74,6 +106,15 @@ def main():
         # 2. Terraform Plan
         if not run_command(["terraform", "plan", "-out=tfplan"], "2/6: Plan Terraform"):
              raise Exception("Terraform plan failed")
+
+        # Pre-Apply Power State Check
+        try:
+            # Try to get RG name from existing state to check power states before apply
+            rg_name_pre = subprocess.check_output(["terraform", "output", "-raw", "resource_group_name"], text=True, stderr=subprocess.DEVNULL).strip()
+            if rg_name_pre:
+                manage_vm_power_states(az_cmd, rg_name_pre)
+        except:
+            pass
 
         # 3. Terraform Apply
         if not run_command(["terraform", "apply", "tfplan"], "3/6: Apply Terraform"):

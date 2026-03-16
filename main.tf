@@ -395,5 +395,6 @@ resource "local_file" "configure_script" {
     fm_internal_name     = module.fm.private_ip # Used by agents to find FM
     uctv_internal_name   = module.uctv_controller.private_ip # Used for internal comms
     admin_username       = var.admin_username
+    resource_group_name  = azurerm_resource_group.rg.name
   })
 }
