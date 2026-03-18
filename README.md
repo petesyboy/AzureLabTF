@@ -284,6 +284,10 @@ terraform output
 
 The output includes:
 - **IPs and URLs**: `fm_public_ip`, `tool_vm_public_ip`, `prod1_public_ip`, `prod2_public_ip`, etc.
+- **SSH Key Security**: Ensure your private key has the correct permissions (Linux/macOS):
+  ```bash
+  chmod 400 $(terraform output -raw lab_key_pem_filename)
+  ```
 - **SSH Commands** (ready to copy-paste): `ssh_fm`, `ssh_uctv`, `ssh_vseries`, `ssh_tool_vm`, `ssh_prod1`, `ssh_prod2`
 - **Key File Path**: `lab_key_pem_filename`
 

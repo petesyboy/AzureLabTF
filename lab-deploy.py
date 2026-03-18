@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+import argparse
 import json
 import subprocess
 import shutil
@@ -113,24 +114,55 @@ def manage_vm_power_states(az_cmd, rg_name):
     except Exception as e:
         print(f"\033[91mWarning: Could not verify VM status: {e}\033[0m")
 
+def purge_deleted_keyvaults(az_cmd, location):
+    """Checks for soft-deleted Key Vaults and purges them to avoid naming conflicts."""
+    print(f"\n\033[93m>>> Checking for soft-deleted Key Vaults in {location}...\033[0m")
+    try:
+        cmd = [az_cmd, "keyvault", "list-deleted", "--query", "[].name", "-o", "json"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            deleted_kvs = json.loads(result.stdout)
+            if deleted_kvs:
+                print(f"\033[93m[!] Found soft-deleted Key Vaults: {', '.join(deleted_kvs)}\033[0m")
+                if input("Would you like to purge them to avoid naming conflicts? (y/n): ").lower() == 'y':
+                    for kv in deleted_kvs:
+                        print(f"Purging {kv}...")
+                        subprocess.run([az_cmd, "keyvault", "purge", "--name", kv, "--location", location, "--no-wait"], check=False)
+                    print("\033[92m[SUCCESS] Purge commands issued.\033[0m")
+    except Exception as e:
+        print(f"Note: Could not check for deleted Key Vaults: {e}")
+
 def main():
+    parser = argparse.ArgumentParser(description="Gigamon Azure Lab Orchestrator")
+    parser.parse_args() # Placeholder for future arg expansion
+    
+    # Check for destroy flag in sys.argv for simplicity or use argparse
+    is_destroy = "--destroy" in sys.argv
+
     start_time = datetime.now()
-    print_header(f"Gigamon Azure Lab Deployment\n Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    mode = "Destruction" if is_destroy else "Deployment"
+    print_header(f"Gigamon Azure Lab {mode}\n Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     success = False
     try:
         # 0. Pre-flight: Check Azure Login
-        print("\n\033[93m>>> 0/6: Checking Azure CLI Authentication...\033[0m")
+        print(f"\n\033[93m>>> 0/6: Checking Azure CLI Authentication...\033[0m")
         
-        # Version Warning
+        # Resolve 'az' command
+        az_cmd = shutil.which("az") or ("az.cmd" if os.name == 'nt' else "az")
+
+        if is_destroy:
+            if run_command(["terraform", "destroy", "-auto-approve"], "Tearing down infrastructure"):
+                print_header("Lab Destroyed Successfully", "green")
+                sys.exit(0)
+            else:
+                raise Exception("Terraform destroy failed")
+        
         print("\033[91m" + "!"*70)
         print("  WARNING: Deploying Gigamon Cloud Suite version 6.13")
         print("  Ensure you have accepted marketplace terms for this version.")
         print("!"*70 + "\033[0m")
         time.sleep(5)
-
-        # Fix for Windows: Resolve 'az' to 'az.cmd' or full path
-        az_cmd = shutil.which("az") or ("az.cmd" if os.name == 'nt' else "az")
 
         try:
             subprocess.check_output([az_cmd, "account", "show"], stderr=subprocess.DEVNULL)
@@ -152,6 +184,13 @@ def main():
             rg_name_pre = subprocess.check_output(["terraform", "output", "-raw", "resource_group_name"], text=True, stderr=subprocess.DEVNULL).strip()
             if rg_name_pre:
                 manage_vm_power_states(az_cmd, rg_name_pre)
+        except:
+            pass
+
+        # Pre-Apply Key Vault Cleanup
+        try:
+            loc = subprocess.check_output(["terraform", "output", "-raw", "location"], text=True, stderr=subprocess.DEVNULL).strip() or "uksouth"
+            purge_deleted_keyvaults(az_cmd, loc)
         except:
             pass
 

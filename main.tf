@@ -15,6 +15,15 @@
 terraform {
   required_version = ">= 1.5.0"
 
+  # Remote State Management
+  # Uncomment and configure this block to store state in Azure instead of locally.
+  # backend "azurerm" {
+  #   resource_group_name  = "your-tfstate-rg"
+  #   storage_account_name = "yourtfstatestorage"
+  #   container_name       = "tfstate"
+  #   key                  = "azure-lab-6.12.terraform.tfstate"
+  # }
+
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
