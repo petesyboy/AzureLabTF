@@ -27,7 +27,6 @@ PROD2_FQDN = "${prod2_fqdn}"
 FM_INTERNAL = "${fm_internal_name}"
 UCTV_INTERNAL = "${uctv_internal_name}"
 ADMIN_USER = "${admin_username}"
-RESOURCE_GROUP = "${resource_group_name}"
 
 # Azure Key Vault (optional convenience for local script)
 # If you uploaded the FM token to Key Vault, this script can read it using Azure CLI.
@@ -51,41 +50,6 @@ def get_key_path():
     return "./lab_key.pem" # Fallback
 
 KEY_FILE = get_key_path()
-
-def verify_vms_running():
-    """Checks if VMs are running and offers to start them."""
-    print(f"[*] Verifying VM power states in resource group: {RESOURCE_GROUP}...")
-    
-    az_cmd = shutil.which("az") or ("az.cmd" if os.name == 'nt' else "az")
-    cmd = [
-        az_cmd, "vm", "list", 
-        "-g", RESOURCE_GROUP, 
-        "-d", 
-        "--query", "[].{name:name, state:powerState}", 
-        "-o", "json"
-    ]
-    
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            return
-            
-        vms = json.loads(result.stdout)
-        stopped_vms = [v['name'] for v in vms if v.get('state') and 'running' not in v['state'].lower()]
-        
-        if stopped_vms:
-            print(f"\n[!] The following VMs are NOT running: {', '.join(stopped_vms)}")
-            choice = input("Would you like to power them on now? (y/n): ").lower()
-            if choice == 'y':
-                for vm in stopped_vms:
-                    print(f"Starting {vm}...")
-                    subprocess.run([az_cmd, "vm", "start", "-g", RESOURCE_GROUP, "-n", vm, "--no-wait"], check=False)
-                print("[+] Start commands issued. Waiting 15s for boot...")
-                time.sleep(15)
-            else:
-                print("[!] Proceeding with VMs offline. Script will likely fail.")
-    except Exception as e:
-        print(f"[!] Warning: Could not verify VM status: {e}")
 
 def check_fm_accessible():
     """Checks if FM API is reachable and ready."""
@@ -315,26 +279,6 @@ def create_anycloud_connection(domain_id, connection_alias):
     except Exception as e:
         print(f"Error creating connection: {e}")
 
-def run_ssh_cmd(fqdn, command, input_data=None, step_name="SSH Command"):
-    """Helper to run remote commands via SSH with consistent error handling."""
-    ssh_cmd = [
-        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
-        f"{ADMIN_USER}@{fqdn}", command
-    ]
-    try:
-        process = subprocess.run(
-            ssh_cmd, input=input_data, text=True, capture_output=True, check=True
-        )
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"  [ERROR] {step_name} failed on {fqdn}.")
-        if e.stderr:
-            print(f"  Details: {e.stderr.strip()}")
-        return False
-    except Exception as e:
-        print(f"  [ERROR] Unexpected error during SSH to {fqdn}: {e}")
-        return False
-
 def push_uctv_config(token):
     """Pushes the registration token and config to the UCTV Controller via SSH."""
     if not UCTV_CONTROLLER_FQDN:
@@ -351,9 +295,31 @@ def push_uctv_config(token):
   remotePort: 443
 """
     
-    cmd = "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart uctv-cntlr'"
-    if run_ssh_cmd(UCTV_CONTROLLER_FQDN, cmd, input_data=config_content, step_name="Push UCTV Config"):
-        print("  [SUCCESS] Config pushed and service restarted.")
+    ssh_cmd = [
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
+        f"{ADMIN_USER}@{UCTV_CONTROLLER_FQDN}",
+        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart uctv-cntlr'"
+    ]
+    
+    print(f"  Attempting SSH connection to {ADMIN_USER}@{UCTV_CONTROLLER_FQDN}...")
+    try:
+        process = subprocess.run(
+            ssh_cmd, 
+            input=config_content, 
+            text=True, 
+            capture_output=True,
+            check=True
+        )
+        print("  [SUCCESS] Successfully wrote /etc/gigamon-cloud.conf and restarted uctv-cntlr service.")
+    except FileNotFoundError:
+        print("  [ERROR] 'ssh' command not found on PATH. Ensure SSH client is installed and accessible.")
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Failed to push config via SSH.")
+        print(f"  Ensure 'lab_key.pem' is in the current directory.")
+        if e.stderr:
+            print(f"  SSH Error: {e.stderr.strip()}")
+    except Exception as e:
+        print(f"  [ERROR] Unhandled exception during SSH: {e}")
 
 def push_vseries_config(token):
     """Pushes the registration token and config to the vSeries node via SSH."""
@@ -484,9 +450,6 @@ def main():
     print("---------------------------------------------------------")
     print("   Gigamon V Series - FM API Configuration")
     print("---------------------------------------------------------")
-
-    # Ensure VMs are powered on before attempting configuration
-    verify_vms_running()
 
     if not check_fm_accessible():
         print("FM is not reachable. Is the VM running?")
