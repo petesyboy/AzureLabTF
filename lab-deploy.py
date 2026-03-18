@@ -207,18 +207,30 @@ def main():
         # Resolve 'az' command
         az_cmd = shutil.which("az") or ("az.cmd" if os.name == 'nt' else "az")
 
-        if is_destroy:
-            if run_command(["terraform", "destroy", "-auto-approve"], "Tearing down infrastructure", is_debug):
-                print_header("Lab Destroyed Successfully", "green")
-                sys.exit(0)
-            else:
-                raise Exception("Terraform destroy failed")
-        
+        # Pre-emptive Key Vault Cleanup (to free up names from previous failed/aborted runs)
+        try:
+            purge_deleted_keyvaults(az_cmd, "uksouth")
+        except:
+            pass
+
         try:
             subprocess.check_output([az_cmd, "account", "show"], stderr=subprocess.DEVNULL)
             print("\033[92m[OK] Azure CLI is authenticated.\033[0m")
         except subprocess.CalledProcessError:
             raise Exception("You are not logged into Azure CLI. Please run 'az login' first.")
+
+        if is_destroy:
+            # Ensure terraform is initialized before attempting destruction
+            if not os.path.exists(".terraform"):
+                run_command(["terraform", "init"], "Initializing Terraform for destruction", is_debug)
+                
+            if run_command(["terraform", "destroy", "-auto-approve"], "Tearing down infrastructure", is_debug):
+                print("\n\033[93m>>> Performing post-destroy Key Vault purge (optional)...\033[0m")
+                purge_deleted_keyvaults(az_cmd, "uksouth")
+                print_header("Lab Destroyed Successfully", "green")
+                sys.exit(0)
+            else:
+                raise Exception("Terraform destroy failed")
 
         # 0b. Marketplace Terms Check
         check_marketplace_terms(az_cmd, gigamon_version, is_debug)
@@ -237,13 +249,6 @@ def main():
             rg_name_pre = subprocess.check_output(["terraform", "output", "-raw", "resource_group_name"], text=True, stderr=subprocess.DEVNULL).strip()
             if rg_name_pre:
                 manage_vm_power_states(az_cmd, rg_name_pre)
-        except:
-            pass
-
-        # Pre-Apply Key Vault Cleanup
-        try:
-            loc = subprocess.check_output(["terraform", "output", "-raw", "location"], text=True, stderr=subprocess.DEVNULL).strip() or "uksouth"
-            purge_deleted_keyvaults(az_cmd, loc)
         except:
             pass
 
