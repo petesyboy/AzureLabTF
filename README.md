@@ -104,6 +104,7 @@ After successful deployment, the following outputs are available:
 
 After deployment, you must generate an API token in GigaVUE-FM and upload it to the Azure Key Vault so agents can register.
 
+**Bash:**
 ```bash
 # 1. Login to Azure
 az login

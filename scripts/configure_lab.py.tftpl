@@ -55,7 +55,8 @@ def check_fm_accessible():
     """Checks if FM API is reachable and ready."""
     url = f"{FM_URL}/api/v1.3/user" 
     print(f"Waiting for FM API to become ready (this can take 5-10 minutes after boot)...")
-    print(f"Checking URL: {url} for a valid JSON API response")
+    print(f"[API CALL] Intent: Poll FM API for readiness (expecting valid JSON)")
+    print(f"[API CALL] URL: GET {url}")
     
     # Increase retries to 90 (15 minutes) to account for slower FM initialization
     max_retries = 90
@@ -129,7 +130,8 @@ def create_monitoring_domain(domain_alias):
     url = f"{FM_URL}/api/v1.3/cloud/monitoringDomains"
 
     # 1. Check existence
-    print(f"Checking for existing domain at: {url}")
+    print(f"\n[API CALL] Intent: Check if Monitoring Domain '{domain_alias}' already exists")
+    print(f"[API CALL] URL: GET {url}")
     try:
         resp = requests.get(url, headers=AUTH_HEADERS, verify=False)
         print(f"GET Response Code: {resp.status_code}")
@@ -174,6 +176,8 @@ def create_monitoring_domain(domain_alias):
         "mtu": 1450
     }
 
+    print(f"[API CALL] Intent: Create new Monitoring Domain '{domain_alias}'")
+    print(f"[API CALL] URL: POST {url}")
     try:
         response = requests.post(url, json=payload, headers=AUTH_HEADERS, verify=False)
         
@@ -196,6 +200,8 @@ def create_monitoring_domain(domain_alias):
             # Attempt to retrieve ID via GET since creation succeeded
             # Wait a moment for consistency?
             time.sleep(2) 
+            print(f"\n[API CALL] Intent: Retrieve ID of the newly created Monitoring Domain")
+            print(f"[API CALL] URL: GET {url}")
             try:
                 resp = requests.get(url, headers=AUTH_HEADERS, verify=False)
                 if resp.status_code == 200:
@@ -220,6 +226,8 @@ def create_monitoring_domain(domain_alias):
         elif response.status_code == 409:
             # Non-interactive: domain exists; retrieve ID and continue.
             print(f"Monitoring Domain '{domain_alias}' already exists (409 Conflict). Retrieving its ID...")
+            print(f"\n[API CALL] Intent: Retrieve ID of the existing Monitoring Domain")
+            print(f"[API CALL] URL: GET {url}")
             try:
                 resp = requests.get(url, headers=AUTH_HEADERS, verify=False)
                 if resp.status_code == 200:
@@ -257,6 +265,8 @@ def create_anycloud_connection(domain_id, connection_alias):
     url = f"{FM_URL}/api/v1.3/cloud/anyCloud/connections"
 
     print(f"\nCreating AnyCloud Connection '{connection_alias}'...")
+    print(f"[API CALL] Intent: Create AnyCloud Connection (Session) for the domain")
+    print(f"[API CALL] URL: POST {url}")
 
     payload = {
         "alias": connection_alias,
@@ -296,9 +306,9 @@ def push_uctv_config(token):
 """
     
     ssh_cmd = [
-        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
         f"{ADMIN_USER}@{UCTV_CONTROLLER_FQDN}",
-        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart uctv-cntlr'"
+        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart --no-block uctv-cntlr'"
     ]
     
     print(f"  Attempting SSH connection to {ADMIN_USER}@{UCTV_CONTROLLER_FQDN}...")
@@ -308,7 +318,8 @@ def push_uctv_config(token):
             input=config_content, 
             text=True, 
             capture_output=True,
-            check=True
+            check=True,
+            timeout=20
         )
         print("  [SUCCESS] Successfully wrote /etc/gigamon-cloud.conf and restarted uctv-cntlr service.")
     except FileNotFoundError:
@@ -318,6 +329,8 @@ def push_uctv_config(token):
         print(f"  Ensure 'lab_key.pem' is in the current directory.")
         if e.stderr:
             print(f"  SSH Error: {e.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        print(f"  [WARNING] SSH command timed out. The agent config may still be applying.")
     except Exception as e:
         print(f"  [ERROR] Unhandled exception during SSH: {e}")
 
@@ -337,11 +350,10 @@ def push_vseries_config(token):
   remotePort: 443
 """
     
-    # Run SSH natively and pass the config via stdin to avoid quoting issues
     ssh_cmd = [
-        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
         f"{ADMIN_USER}@{VSERIES_FQDN}",
-        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart vseries-node'"
+        "sudo bash -c 'cat > /etc/gigamon-cloud.conf && systemctl restart --no-block vseries-node'"
     ]
     
     print(f"  Attempting SSH connection to {ADMIN_USER}@{VSERIES_FQDN}...")
@@ -351,7 +363,8 @@ def push_vseries_config(token):
             input=config_content, 
             text=True, 
             capture_output=True,
-            check=True
+            check=True,
+            timeout=20
         )
         print("  [SUCCESS] Successfully wrote /etc/gigamon-cloud.conf and restarted vseries-node service.")
     except FileNotFoundError:
@@ -361,6 +374,8 @@ def push_vseries_config(token):
         print(f"  Ensure 'lab_key.pem' is in the current directory.")
         if e.stderr:
             print(f"  SSH Error: {e.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        print(f"  [WARNING] SSH command timed out. The node config may still be applying.")
     except Exception as e:
         print(f"  [ERROR] Unhandled exception during SSH: {e}")
 
@@ -372,13 +387,15 @@ def restart_ubuntu_agents():
             continue
         print(f"Restarting uctv agent daemon on {name} ({fqdn})...")
         ssh_cmd = [
-            "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no",
+            "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
             f"{ADMIN_USER}@{fqdn}",
-            "sudo systemctl restart uctv"
+            "sudo systemctl restart --no-block uctv"
         ]
         try:
-            subprocess.run(ssh_cmd, capture_output=True, check=True)
+            subprocess.run(ssh_cmd, capture_output=True, check=True, timeout=15)
             print(f"  [SUCCESS] Successfully restarted uctv service on {name}.")
+        except subprocess.TimeoutExpired:
+            print(f"  [WARNING] SSH command timed out on {name}. The agent may still be restarting.")
         except Exception as e:
             print(f"  [WARNING] Could not restart agent on {name}. It may restart automatically later via timer.")
 
@@ -388,7 +405,7 @@ def check_service_status(fqdn, service_name, user=ADMIN_USER):
         return "SKIPPED"
     
     cmd = [
-        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+        "ssh", "-i", KEY_FILE, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5",
         f"{user}@{fqdn}",
         f"systemctl is-active {service_name}"
     ]

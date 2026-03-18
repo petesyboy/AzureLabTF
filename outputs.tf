@@ -13,6 +13,11 @@ output "fm_public_ip" {
   description = "The public IP address of GigaVUE-FM."
 }
 
+output "fm_ui_url" {
+  value       = "https://${module.fm.public_ip}"
+  description = "Clickable URL for the GigaVUE-FM Web UI"
+}
+
 output "resource_group_name" {
   value       = azurerm_resource_group.rg.name
   description = "The name of the Resource Group."
@@ -31,6 +36,41 @@ output "storage_account_name" {
 output "storage_container_name" {
   value       = azurerm_storage_container.uctv_container.name
   description = "The name of the Storage Container for UCTV agents."
+}
+
+output "admin_username" {
+  value       = var.admin_username
+  description = "The admin username for SSH access to all VMs"
+}
+
+output "lab_key_file" {
+  value       = local_file.lab_key_pem.filename
+  description = "Path to the local SSH private key file"
+}
+
+output "uctv_public_ip" {
+  value       = module.uctv_controller.public_ip
+  description = "The public IP address of the UCT-V Controller"
+}
+
+output "vseries_public_ip" {
+  value       = module.vseries.public_ip
+  description = "The public IP address of the vSeries Node"
+}
+
+output "tool_vm_public_ip" {
+  value       = module.tool_vm.public_ip
+  description = "The public IP address of the Tool VM"
+}
+
+output "prod1_public_ip" {
+  value       = module.prod1.public_ip
+  description = "The public IP address of Production VM 1"
+}
+
+output "prod2_public_ip" {
+  value       = module.prod2.public_ip
+  description = "The public IP address of Production VM 2"
 }
 
 output "ssh_fm" {
@@ -61,4 +101,9 @@ output "ssh_prod1" {
 output "ssh_prod2" {
   value       = "ssh -i ./lab_key.pem ${var.admin_username}@${module.prod2.public_ip}"
   description = "SSH command for Production VM 2"
+}
+
+output "ntopng_ui_url" {
+  value       = "http://${module.tool_vm.public_ip}:3000"
+  description = "Clickable URL for the ntopng Web UI on the Tool VM"
 }

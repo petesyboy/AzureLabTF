@@ -128,5 +128,5 @@ variable "fm_token_secret_name" {
 variable "uctv_agent_base_url" {
   type        = string
   description = "The base URL for the UCT-V agent Debian package location (Blob Storage container)."
-  default     = "https://connollystorageaccount.blob.core.windows.net/uctv-agents"
+  default     = "https://<YOUR_ACTUAL_STORAGE_ACCOUNT_NAME>.blob.core.windows.net/uctv-agents"
 }

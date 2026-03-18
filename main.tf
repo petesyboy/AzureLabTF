@@ -356,45 +356,34 @@ module "prod2" {
 # -----------------------------------------------------------------------------
 # Orchestration
 # -----------------------------------------------------------------------------
-resource "azurerm_role_assignment" "kv_secrets_user_uctv" {
-  scope                = azurerm_key_vault.fm_token_kv.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = module.uctv_controller.principal_id
-}
 
-resource "azurerm_role_assignment" "kv_secrets_user_vseries" {
-  scope                = azurerm_key_vault.fm_token_kv.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = module.vseries.principal_id
-}
+resource "azurerm_role_assignment" "kv_secrets_users" {
+  for_each = {
+    uctv     = module.uctv_controller.principal_id
+    vseries  = module.vseries.principal_id
+    prod1    = module.prod1.principal_id
+    prod2    = module.prod2.principal_id
+  }
 
-resource "azurerm_role_assignment" "kv_secrets_user_prod1" {
   scope                = azurerm_key_vault.fm_token_kv.id
   role_definition_name = "Key Vault Secrets User"
-  principal_id         = module.prod1.principal_id
-}
-
-resource "azurerm_role_assignment" "kv_secrets_user_prod2" {
-  scope                = azurerm_key_vault.fm_token_kv.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = module.prod2.principal_id
+  principal_id         = each.value
 }
 
 resource "local_file" "configure_script" {
   filename = "${path.module}/scripts/configure_lab.py"
   content = templatefile("${path.module}/scripts/configure_lab.py.tftpl", {
-    fm_fqdn              = module.fm.public_ip # Used by local script for API calls
     fm_group             = var.fm_group_name
     fm_subgroup          = var.fm_subgroup_name
+    admin_username       = var.admin_username
+    fm_fqdn              = module.fm.public_ip
+    vseries_fqdn         = module.vseries.public_ip
+    uctv_controller_fqdn = module.uctv_controller.public_ip
+    prod1_fqdn           = module.prod1.public_ip
+    prod2_fqdn           = module.prod2.public_ip
+    fm_internal_name     = module.fm.private_ip
+    uctv_internal_name   = module.uctv_controller.private_ip
     key_vault_name       = azurerm_key_vault.fm_token_kv.name
     fm_token_secret_name = var.fm_token_secret_name
-    vseries_fqdn         = module.vseries.public_ip # Used for SSH config push
-    uctv_controller_fqdn = module.uctv_controller.public_ip # Used for SSH config push
-    prod1_fqdn           = module.prod1.public_ip # Used for SSH agent restart
-    prod2_fqdn           = module.prod2.public_ip # Used for SSH agent restart
-    fm_internal_name     = module.fm.private_ip # Used by agents to find FM
-    uctv_internal_name   = module.uctv_controller.private_ip # Used for internal comms
-    admin_username       = var.admin_username
-    resource_group_name  = azurerm_resource_group.rg.name
   })
 }

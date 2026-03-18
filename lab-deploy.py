@@ -29,6 +29,7 @@ def run_command(command, step_name):
     env = os.environ.copy()
     env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONWARNINGS"] = "ignore"
     try:
         result = subprocess.run(
             command,
@@ -42,6 +43,44 @@ def run_command(command, step_name):
     except Exception as e:
         print(f"\033[91mFailed to execute {command[0]}: {e}\033[0m")
         return False
+
+def wait_for_cloud_init(ip, user, key_file, vm_name):
+    print(f"Waiting for cloud-init to finish on {vm_name} ({ip})... (This may take a few minutes)")
+    ssh_cmd = [
+        "ssh", "-i", key_file, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10",
+        f"{user}@{ip}",
+        "cloud-init status --wait"
+    ]
+    
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+            stdout = result.stdout.strip()
+            stderr = result.stderr.strip()
+            
+            # If we don't get the 'status: ' string, SSH probably failed to connect or authenticate
+            if "status:" not in stdout:
+                print(f"  ... Still waiting for SSH/cloud-init on {vm_name} (Attempt {attempt+1}/{max_retries})")
+                time.sleep(15)
+                continue
+
+            if "status: done" in stdout:
+                print(f"\033[92m  [SUCCESS] cloud-init finished successfully.\033[0m")
+                return True
+            elif "status: error" in stdout or "status: degraded" in stdout:
+                print(f"\033[91m  [ERROR] cloud-init failed or degraded. Output:\n    {stdout}\033[0m")
+                return False
+            else:
+                print(f"\033[93m  [WARNING] cloud-init returned unexpected status (Code: {result.returncode}).\n    Output: {stdout}\n    Error: {stderr}\033[0m")
+                return False
+        except Exception as e:
+            print(f"\033[91m  [ERROR] Failed to execute SSH check: {e}\033[0m")
+            return False
+            
+    print(f"\033[91m  [ERROR] Could not verify cloud-init on {vm_name} after {max_retries} attempts.\033[0m")
+    return False
 
 def manage_vm_power_states(az_cmd, rg_name):
     """Checks VM power states and offers to start them to avoid Terraform 409 conflicts."""
@@ -187,12 +226,21 @@ def main():
         # Get Key Vault details from Terraform
         print("\n\033[93m>>> Fetching deployment details from Terraform...\033[0m")
         try:
-            kv_name = subprocess.check_output(["terraform", "output", "-raw", "key_vault_name"], text=True).strip()
-            secret_name = subprocess.check_output(["terraform", "output", "-raw", "fm_token_secret_name"], text=True).strip()
-            fm_ip = subprocess.check_output(["terraform", "output", "-raw", "fm_public_ip"], text=True).strip()
-            rg_name = subprocess.check_output(["terraform", "output", "-raw", "resource_group_name"], text=True).strip()
-            location = subprocess.check_output(["terraform", "output", "-raw", "location"], text=True).strip()
-        except subprocess.CalledProcessError:
+            outputs_json = subprocess.check_output(["terraform", "output", "-json"], text=True)
+            outputs = json.loads(outputs_json)
+            
+            kv_name = outputs['key_vault_name']['value']
+            secret_name = outputs['fm_token_secret_name']['value']
+            fm_ip = outputs['fm_public_ip']['value']
+            rg_name = outputs['resource_group_name']['value']
+            location = outputs['location']['value']
+            
+            admin_username = outputs.get('admin_username', {}).get('value')
+            lab_key_file = outputs.get('lab_key_file', {}).get('value')
+            prod1_ip = outputs.get('prod1_public_ip', {}).get('value')
+            prod2_ip = outputs.get('prod2_public_ip', {}).get('value')
+            tool_vm_ip = outputs.get('tool_vm_public_ip', {}).get('value')
+        except (subprocess.CalledProcessError, KeyError):
             raise Exception("Failed to fetch Terraform outputs. Ensure 'outputs.tf' exists and defines key_vault_name, fm_token_secret_name, fm_public_ip, resource_group_name, and location.")
 
         # Upload UCTV Files to Azure Storage
@@ -200,8 +248,8 @@ def main():
             print("\n\033[93m>>> Checking for UCTV files and Storage Account...\033[0m")
 
             # These should now always exist in TF output
-            sa_name = subprocess.check_output(["terraform", "output", "-raw", "storage_account_name"], text=True).strip()
-            sa_container = subprocess.check_output(["terraform", "output", "-raw", "storage_container_name"], text=True).strip()
+            sa_name = outputs['storage_account_name']['value']
+            sa_container = outputs['storage_container_name']['value']
             
             # 3. Check Local Files
             uctv_source_dir = os.path.join(".", "UCTV-files")
@@ -260,14 +308,27 @@ def main():
             print(f"\033[91mError during storage/upload operations: {e}\033[0m")
             raise e
 
+        # Wait for cloud-init on Standard Ubuntu VMs
+        if admin_username and lab_key_file:
+            print("\n\033[93m>>> Waiting for VM configuration (cloud-init) to complete...\033[0m")
+            vms_to_check = [("Tool VM", tool_vm_ip), ("Production VM 1", prod1_ip), ("Production VM 2", prod2_ip)]
+            for name, ip in vms_to_check:
+                if ip:
+                    wait_for_cloud_init(ip, admin_username, lab_key_file, name)
+
         # Manual Intervention Step
         print_header("ACTION REQUIRED", "yellow")
         print(f"1. Open GigaVUE-FM: https://{fm_ip}")
         print("   (Credentials: admin / admin123A!!)")
         print("   IMPORTANT: You MUST change the admin password in the UI now.")
         print("2. Generate an API Token (Administration > User Management > Tokens > New Token).")
-        print(f"3. Upload the token to Key Vault:")
-        print(f"\n   az keyvault secret set --vault-name {kv_name} --name {secret_name} --value <YOUR_TOKEN>\n")
+        print("3. Upload the token to Key Vault:")
+        print("\n   Bash:")
+        print(f"   az keyvault secret set --vault-name \"{kv_name}\" --name \"{secret_name}\" --value \"<YOUR_TOKEN>\"")
+        print("\n   PowerShell:")
+        print(f"   $KV_NAME = \"{kv_name}\"")
+        print(f"   $SECRET_NAME = \"{secret_name}\"")
+        print(f"   az keyvault secret set --vault-name $KV_NAME --name $SECRET_NAME --value \"<YOUR_TOKEN>\"\n")
         
         # Verification Loop
         while True:
