@@ -216,6 +216,13 @@ This lab creates an Azure Key Vault and assigns **managed identities** to the UC
 - The token value is **not stored in Terraform state**.
 - After you upload the secret, the VMs automatically update `/etc/gigamon-cloud.conf` and restart the relevant Gigamon services.
 
+### Troubleshooting Logs
+If agents are not appearing in GigaVUE-FM, check the following logs on the target VMs:
+- **/var/log/gigamon-bootstrap.log**: Tracks the Managed Identity token fetch from Key Vault and agent installation.
+- **/var/log/cloud-init-output.log**: Tracks the initial VM provisioning and package updates.
+
+To view: `sudo tail -f /var/log/gigamon-bootstrap.log`
+
 0. Ensure you are logged into Azure CLI in the correct subscription:
 
 ```bash

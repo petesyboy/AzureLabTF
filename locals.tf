@@ -43,6 +43,10 @@ locals {
   shared_token_fetch_script = <<-EOF
     #!/usr/bin/env bash
     set -euo pipefail
+    LOG="/var/log/gigamon-bootstrap.log"
+    exec > >(tee -a "$LOG") 2>&1
+
+    echo "[$(date)] Starting Token Fetch from Key Vault..."
     CONF="/etc/gigamon-cloud.conf"
     KV_NAME="${azurerm_key_vault.fm_token_kv.name}"
     SECRET_NAME="${var.fm_token_secret_name}"
@@ -76,6 +80,7 @@ locals {
 
     if [[ -z "$FM_TOKEN" ]]; then exit 0; fi
     sed -i "s|^\\([[:space:]]*token:\\).*|\\1 $${FM_TOKEN}|" "$CONF"
+    echo "[$(date)] Token successfully updated in $CONF"
     systemctl start gigamon-agent-refresh.service >/dev/null 2>&1 || true
     systemctl disable --now fm-token-fetch.timer >/dev/null 2>&1 || true
   EOF
@@ -85,11 +90,14 @@ locals {
   shared_agent_refresh_script = <<-EOF
     #!/usr/bin/env bash
     set -euo pipefail
+    LOG="/var/log/gigamon-bootstrap.log"
+    exec > >(tee -a "$LOG") 2>&1
+
     CONF="/etc/gigamon-cloud.conf"
     if [[ ! -f "$CONF" ]] || grep -q "PLACEHOLDER_TOKEN" "$CONF"; then exit 0; fi
-    # Identify which service is running
     for srv in vseries-node uctv; do
       if systemctl is-enabled "$${srv}" >/dev/null 2>&1; then
+        echo "[$(date)] Restarting service: $${srv}"
         systemctl restart "$${srv}"
       fi
     done
@@ -99,7 +107,10 @@ locals {
   shared_uctv_download_script = <<-EOF
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Downloading UCT-V agent..."
+    LOG="/var/log/gigamon-bootstrap.log"
+    exec > >(tee -a "$LOG") 2>&1
+
+    echo "[$(date)] Downloading UCT-V agent..."
     sleep 20
     AGENT_URL="${azurerm_storage_account.lab_sa.primary_blob_endpoint}${azurerm_storage_container.uctv_container.name}/gigamon-gigavue-uctv-${local.uctv_image_version}-amd64.deb"
     for i in {1..10}; do
@@ -110,6 +121,7 @@ locals {
       sleep 10
     done
     if [ -f /tmp/uctv-agent.deb ]; then
+      echo "[$(date)] Installing agent package..."
       dpkg -i /tmp/uctv-agent.deb || DEBIAN_FRONTEND=noninteractive apt-get install -f -y
     else
       echo "ERROR: Failed to download UCT-V agent after 10 attempts."

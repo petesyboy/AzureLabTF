@@ -9,6 +9,7 @@ import subprocess
 import shutil
 from datetime import datetime, timedelta
 import stat
+import re
 
 def print_header(text, color="cyan"):
     colors = {
@@ -23,22 +24,25 @@ def print_header(text, color="cyan"):
     print(f"{c} {text}{colors['reset']}")
     print(f"{c}======================================================={colors['reset']}")
 
-def run_command(command, step_name):
+def run_command(command, step_name, verbose=False):
     print(f"\n\033[93m>>> {step_name}: Running '{' '.join(command)}'...\033[0m")
-    # Disable keyring to prevent macOS hangs during pip operations
-    # and ensure output is unbuffered.
     env = os.environ.copy()
     env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONWARNINGS"] = "ignore"
+    
+    # If verbose is true, we let output stream to console. 
+    # Otherwise, we capture it to show only on error.
+    stdout_dest = None if verbose else subprocess.PIPE
+    stderr_dest = None if verbose else subprocess.PIPE
+
     try:
-        result = subprocess.run(
-            command,
-            check=False,
-            env=env
-        )
+        result = subprocess.run(command, env=env, stdout=stdout_dest, stderr=stderr_dest, text=True)
         if result.returncode != 0:
             print(f"\033[91mError: '{' '.join(command)}' failed with exit code {result.returncode}\033[0m")
+            if not verbose:
+                print(f"\033[91mSTDOUT:\033[0m\n{result.stdout}")
+                print(f"\033[91mSTDERR:\033[0m\n{result.stderr}")
             return False
         return True
     except Exception as e:
@@ -46,7 +50,7 @@ def run_command(command, step_name):
         return False
 
 def wait_for_cloud_init(ip, user, key_file, vm_name):
-    print(f"Waiting for cloud-init to finish on {vm_name} ({ip})... (This may take a few minutes)")
+    print(f"Waiting for cloud-init on {vm_name} ({ip})... (Check /var/log/cloud-init-output.log on VM for details)")
     ssh_cmd = [
         "ssh", "-i", key_file, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=10",
@@ -114,6 +118,55 @@ def manage_vm_power_states(az_cmd, rg_name):
     except Exception as e:
         print(f"\033[91mWarning: Could not verify VM status: {e}\033[0m")
 
+def get_gigamon_version():
+    """Parses variables.tf to find the default gigamon_version."""
+    try:
+        with open("variables.tf", "r") as f:
+            content = f.read()
+            match = re.search(r'variable\s+"gigamon_version"\s+{[^}]+default\s+=\s+"([^"]+)"', content)
+            if match:
+                return match.group(1)
+    except Exception:
+        pass
+    return "6.13" # Fallback default
+
+def check_marketplace_terms(az_cmd, version, verbose=False):
+    """Checks if Marketplace terms are accepted for Gigamon images and offers to accept them."""
+    sku_code = version.replace(".", "") + "00"
+    publisher = "gigamon-inc"
+    offer = "gigamon-gigavue-cloud-suite-v2"
+    plans = [
+        f"gfm-azure-v{sku_code}",
+        f"uctv-cntlr-v{sku_code}",
+        f"vseries-node-v{sku_code}"
+    ]
+
+    print(f"\n\033[93m>>> Checking Azure Marketplace terms for version {version}...\033[0m")
+    for plan in plans:
+        try:
+            # Check current status
+            cmd = [az_cmd, "vm", "image", "terms", "show", "--publisher", publisher, "--offer", offer, "--plan", plan, "-o", "json"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            accepted = False
+            if result.returncode == 0:
+                terms = json.loads(result.stdout)
+                accepted = terms.get("accepted", False)
+
+            if accepted:
+                print(f"\033[92m  [OK] Terms already accepted for: {plan}\033[0m")
+            else:
+                print(f"\033[93m  [!] Terms NOT accepted for: {plan}\033[0m")
+                user_input = input(f"      Would you like to accept terms for '{plan}' now? (y/n): ").lower()
+                if user_input == 'y':
+                    accept_cmd = [az_cmd, "vm", "image", "terms", "accept", "--publisher", publisher, "--offer", offer, "--plan", plan]
+                    if run_command(accept_cmd, f"Accepting terms for {plan}", verbose):
+                        print(f"\033[92m      [SUCCESS] Terms accepted.\033[0m")
+                    else:
+                        print(f"\033[91m      [ERROR] Failed to accept terms for {plan}.\033[0m")
+        except Exception as e:
+            print(f"\033[91m  [ERROR] Could not verify terms for {plan}: {e}\033[0m")
+
 def purge_deleted_keyvaults(az_cmd, location):
     """Checks for soft-deleted Key Vaults and purges them to avoid naming conflicts."""
     print(f"\n\033[93m>>> Checking for soft-deleted Key Vaults in {location}...\033[0m")
@@ -134,14 +187,17 @@ def purge_deleted_keyvaults(az_cmd, location):
 
 def main():
     parser = argparse.ArgumentParser(description="Gigamon Azure Lab Orchestrator")
-    parser.parse_args() # Placeholder for future arg expansion
-    
-    # Check for destroy flag in sys.argv for simplicity or use argparse
-    is_destroy = "--destroy" in sys.argv
+    parser.add_argument("--destroy", action="store_true", help="Tear down the infrastructure")
+    parser.add_argument("--debug", action="store_true", help="Stream all command output to console")
+    args = parser.parse_args()
+
+    is_destroy = args.destroy
+    is_debug = args.debug
+    gigamon_version = get_gigamon_version()
 
     start_time = datetime.now()
     mode = "Destruction" if is_destroy else "Deployment"
-    print_header(f"Gigamon Azure Lab {mode}\n Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print_header(f"Gigamon Azure Lab {mode}\n Suite Version: {gigamon_version}\n Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     success = False
     try:
@@ -152,30 +208,27 @@ def main():
         az_cmd = shutil.which("az") or ("az.cmd" if os.name == 'nt' else "az")
 
         if is_destroy:
-            if run_command(["terraform", "destroy", "-auto-approve"], "Tearing down infrastructure"):
+            if run_command(["terraform", "destroy", "-auto-approve"], "Tearing down infrastructure", is_debug):
                 print_header("Lab Destroyed Successfully", "green")
                 sys.exit(0)
             else:
                 raise Exception("Terraform destroy failed")
         
-        print("\033[91m" + "!"*70)
-        print("  WARNING: Deploying Gigamon Cloud Suite version 6.13")
-        print("  Ensure you have accepted marketplace terms for this version.")
-        print("!"*70 + "\033[0m")
-        time.sleep(5)
-
         try:
             subprocess.check_output([az_cmd, "account", "show"], stderr=subprocess.DEVNULL)
             print("\033[92m[OK] Azure CLI is authenticated.\033[0m")
         except subprocess.CalledProcessError:
             raise Exception("You are not logged into Azure CLI. Please run 'az login' first.")
 
+        # 0b. Marketplace Terms Check
+        check_marketplace_terms(az_cmd, gigamon_version, is_debug)
+
         # 1. Terraform Init
-        if not run_command(["terraform", "init"], "1/6: Initialize Terraform"):
+        if not run_command(["terraform", "init"], "1/6: Initialize Terraform", is_debug):
             raise Exception("Terraform init failed")
 
         # 2. Terraform Plan
-        if not run_command(["terraform", "plan", "-out=tfplan"], "2/6: Plan Terraform"):
+        if not run_command(["terraform", "plan", "-out=tfplan"], "2/6: Plan Terraform", is_debug):
              raise Exception("Terraform plan failed")
 
         # Pre-Apply Power State Check
@@ -195,7 +248,7 @@ def main():
             pass
 
         # 3. Terraform Apply
-        if not run_command(["terraform", "apply", "tfplan"], "3/6: Apply Terraform"):
+        if not run_command(["terraform", "apply", "tfplan"], "3/6: Apply Terraform", is_debug):
              raise Exception("Terraform apply failed")
 
         # 4. Set up Python Environment
@@ -318,7 +371,7 @@ def main():
                     "--location", location,
                     "--sku", "Standard_LRS"
                 ]
-                if not run_command(create_cmd, "Create Storage Account"):
+                if not run_command(create_cmd, "Create Storage Account", is_debug):
                     raise Exception(f"Failed to create storage account {sa_name}")
             
             # 5. Upload Files (using Key Auth for reliability)
@@ -338,7 +391,7 @@ def main():
                 "--overwrite", "true"
             ]
             
-            if run_command(upload_cmd, "Upload UCTV Files"):
+            if run_command(upload_cmd, "Upload UCTV Files", is_debug):
                 print("\033[92m[SUCCESS] Files uploaded to Azure Storage.\033[0m")
             else:
                 raise Exception("Failed to upload UCTV files.")
@@ -349,7 +402,13 @@ def main():
 
         # Wait for cloud-init on Standard Ubuntu VMs
         if admin_username and lab_key_file:
-            print("\n\033[93m>>> Waiting for VM configuration (cloud-init) to complete...\033[0m")
+            print("\n\033[93m>>> Validating SSH Key and waiting for cloud-init...\033[0m")
+            if not os.path.exists(lab_key_file):
+                print(f"\033[91m[ERROR] SSH Key file not found at {lab_key_file}\033[0m")
+            else:
+                # Auto-fix permissions on Unix-like systems
+                if os.name != 'nt':
+                    os.chmod(lab_key_file, 0o400)
             vms_to_check = [("Tool VM", tool_vm_ip), ("Production VM 1", prod1_ip), ("Production VM 2", prod2_ip)]
             for name, ip in vms_to_check:
                 if ip:
@@ -390,11 +449,11 @@ def main():
         if not os.path.exists(script_file):
              raise Exception(f"{script_file} was not found. Did terraform generate it?")
         
-        if not run_command([python_exe, script_file], "5/6: Run configure_lab.py"):
+        if not run_command([python_exe, script_file], "5/6: Run configure_lab.py", is_debug):
             raise Exception("configure_lab.py script failed")
 
         # 6. Run status check
-        if not run_command([python_exe, script_file, "--status"], "6/6: Run Post-Deployment Status Check"):
+        if not run_command([python_exe, script_file, "--status"], "6/6: Run Post-Deployment Status Check", is_debug):
             # Don't fail the whole build, just warn the user.
             print("\033[93mWarning: Status check reported issues. The lab might be partially functional.\033[0m")
 
@@ -430,6 +489,14 @@ def main():
                     print(f"  {label.ljust(15)}: {cmd}")
                 except:
                     pass
+
+            print("\n\033[93m>>> Logs & Troubleshooting:\033[0m")
+            print("  Use these logs on the VMs to debug registration or configuration issues:")
+            print("  - Gigamon Bootstrap:   /var/log/gigamon-bootstrap.log  (Token fetch, UCT-V install)")
+            print("  - Cloud-Init Output:   /var/log/cloud-init-output.log  (Package install, runcmd logs)")
+            print("\n  Example to tail logs live:")
+            print(f"    ssh -i {lab_key_file} {admin_username}@{prod1_ip} 'tail -f /var/log/gigamon-bootstrap.log'")
+
         except Exception:
             pass
     else:
